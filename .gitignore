@@ -1,12 +1,16 @@
 
 output_minilm_best/
 __pycache__/
+logs/
+model/
+.env
+.DS_Store
+*.pyc
 *.log
 *.ckpt
 *.pt
 *.bin
 *.json
-*.txt
 *.csv
 *.zip
 *.tar.gz

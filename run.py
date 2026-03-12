@@ -11,7 +11,7 @@ def _ensure_project_root_on_path() -> None:
         sys.path.insert(0, project_root)
 
 def _ensure_logs_dir() -> str:
-    logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+    logs_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(logs_dir, exist_ok=True)
     return logs_dir
 
