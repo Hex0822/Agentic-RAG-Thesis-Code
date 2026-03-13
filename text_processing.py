@@ -156,15 +156,21 @@ def _resolve_coref(text: str, model: Optional[object], logger: logging.Logger) -
     if model is None:
         return text
     try:
-        result = model.predict([text])
-        if isinstance(result, list) and result:
-            first = result[0]
+        try:
+            result = model.predict([text], resolve_text=True)
+        except TypeError:
+            result = model.predict([text])
+        items = result if isinstance(result, list) else [result]
+        if items:
+            first = items[0]
             if isinstance(first, dict):
                 return str(first.get("resolved_text") or first.get("resolved") or text)
             if hasattr(first, "get_resolved_text"):
                 return str(first.get_resolved_text())
             if hasattr(first, "resolved_text"):
-                return str(first.resolved_text)
+                return str(getattr(first, "resolved_text"))
+            if hasattr(first, "resolved"):
+                return str(getattr(first, "resolved"))
         return text
     except Exception as exc:
         logger.warning("Coreference resolution failed; using cleaned text: %s", exc)

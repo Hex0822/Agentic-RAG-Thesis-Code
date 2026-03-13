@@ -261,6 +261,7 @@ def _flatten_candidates(grouped: Dict[str, List[CandidateSentence]], ordered_cla
 
 class PipelineState(TypedDict):
     original_claim: str
+    claim_relationship: str
     sub_claims: List[str]
     keywords: Dict[str, List[str]]
     articles: Dict[str, Dict[str, List[ProcessedArticleRecord]]]
@@ -287,10 +288,16 @@ def build_pipeline():
 
     def claim_extraction_node(state: PipelineState) -> PipelineState:
         LOGGER.info("Step 1/7: claim_extraction")
-        sub_claims = extractor.extract(state["original_claim"])
+        extraction = extractor.extract(state["original_claim"])
+        sub_claims = extraction["sub_claims"]
         stats = dict(state.get("stats", {}))
         stats["sub_claims"] = len(sub_claims)
-        return {"sub_claims": sub_claims, "stats": stats}  # type: ignore
+        stats["claim_relationship"] = extraction["relationship_type"]
+        return {
+            "sub_claims": sub_claims,
+            "claim_relationship": extraction["relationship_type"],
+            "stats": stats,
+        }  # type: ignore
 
     def keyword_generation_node(state: PipelineState) -> PipelineState:
         LOGGER.info("Step 2/7: keyword_generation")
