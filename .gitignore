@@ -20,3 +20,4 @@ model/
 *.pb
 *.tflite
 *.ipynb
+design_doc.md
