@@ -3,7 +3,7 @@
 from typing import Any, Literal, TypedDict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -18,7 +18,10 @@ RELATIONSHIP TYPES:
    - Do NOT split the claim. sub_claims must be exactly [original_claim].
 2) CAUSAL: The claim expresses a causal/attribution relationship (e.g., "A caused B", "because of A, B changed").
    - Output relationship_type = "CAUSAL"
-   - Split into independent sub-claims for each factual component, but do NOT include the causal statement itself.
+   - Split into independent sub-claims for each factual component.
+   - After splitting, include one normalized version of the original claim as an additional sub-claim.
+   - In that added sub-claim, resolve pronouns and make subject-relation-object explicit.
+   - Keep only the normalized version (do not keep both raw and normalized originals).
 3) ATOMIC: The claim contains multiple parallel, independent facts.
    - Output relationship_type = "ATOMIC"
    - Split into atomic sub-claims as usual.
@@ -34,7 +37,7 @@ Input: "Microsoft CEO's wife's birthplace is Yosemite."
 Output: {{"relationship_type": "NESTED", "sub_claims": ["Microsoft CEO's wife's birthplace is Yosemite."], "classification_basis": "Nested dependency via possessive relationship (CEO's wife), so keep the original claim."}}
 
 Input: "A happened in 2020, which caused B to change policy in 2021."
-Output: {{"relationship_type": "CAUSAL", "sub_claims": ["A happened in 2020.", "B changed policy in 2021."], "classification_basis": "Explicit causal trigger ('caused') indicates a causal relation, so split into factual components only."}}
+Output: {{"relationship_type": "CAUSAL", "sub_claims": ["A happened in 2020.", "B changed policy in 2021.", "Because A happened in 2020, B changed policy in 2021."], "classification_basis": "Explicit causal trigger ('caused') indicates a causal relation, so split into factual components and include one normalized causal statement."}}
 
 Input: "Elon Musk founded SpaceX in 2002 and later acquired Twitter."
 Output: {{"relationship_type": "ATOMIC", "sub_claims": ["Elon Musk founded SpaceX in 2002.", "Elon Musk acquired Twitter."], "classification_basis": "Parallel independent facts joined by 'and' indicate an atomic split."}}
@@ -44,6 +47,24 @@ Output: {{"relationship_type": "ATOMIC", "sub_claims": ["Elon Musk founded Space
 
 HUMAN_PROMPT = """Original claim:
 {original_claim}
+"""
+
+RESOLVE_SYSTEM_PROMPT = """
+Rewrite the CAUSAL claim into one canonical sentence.
+
+Rules:
+1) Resolve all pronouns to explicit entities (no "he/she/it/they/this/that").
+2) Make subject, relation, and object explicit and clear.
+3) Keep the causal relation explicit (e.g., "X caused Y", "Because X, Y happened").
+4) Preserve original facts, entities, and dates. Do not add new facts.
+5) Return exactly one sentence, with no explanation.
+"""
+
+RESOLVE_HUMAN_PROMPT = """Original claim:
+{original_claim}
+
+Context (already resolved sub-claims):
+{sub_claims_context}
 """
 
 
@@ -72,20 +93,111 @@ class ClaimAnalyzer:
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
         self._chain = self._prompt | llm | self._parser
+        self._resolve_prompt = ChatPromptTemplate.from_messages(
+            [("system", RESOLVE_SYSTEM_PROMPT), ("human", RESOLVE_HUMAN_PROMPT)]
+        )
+        self._resolve_chain = self._resolve_prompt | llm | StrOutputParser()
+
+    def _normalize_causal_original_claim(self, original_claim: str, sub_claims: list[str]) -> str:
+        context = "\n".join(f"- {s}" for s in sub_claims if s and s.strip())
+        try:
+            rewritten = self._resolve_chain.invoke(
+                {
+                    "original_claim": original_claim,
+                    "sub_claims_context": context,
+                }
+            )
+            rewritten = rewritten.strip().strip('"').strip("'")
+            if rewritten:
+                return rewritten
+        except Exception:
+            pass
+        return original_claim
+
+    async def _anormalize_causal_original_claim(
+        self, original_claim: str, sub_claims: list[str]
+    ) -> str:
+        context = "\n".join(f"- {s}" for s in sub_claims if s and s.strip())
+        try:
+            rewritten = await self._resolve_chain.ainvoke(
+                {
+                    "original_claim": original_claim,
+                    "sub_claims_context": context,
+                }
+            )
+            rewritten = rewritten.strip().strip('"').strip("'")
+            if rewritten:
+                return rewritten
+        except Exception:
+            pass
+        return original_claim
+
+    def _apply_causal_include_original_rule(
+        self, result: ClaimAnalysisOutput, original_claim: str
+    ) -> ClaimAnalysisOutput:
+        if result.relationship_type != "CAUSAL":
+            return result
+
+        original = original_claim.strip()
+        if not original:
+            return result
+
+        rewritten = self._normalize_causal_original_claim(original, result.sub_claims).strip()
+        if not rewritten:
+            rewritten = original
+
+        original_norm = original.lower()
+        rewritten_norm = rewritten.lower()
+        filtered = [
+            s
+            for s in result.sub_claims
+            if s.strip().lower() not in {original_norm, rewritten_norm}
+        ]
+        filtered.append(rewritten)
+        result.sub_claims = filtered
+        return result
+
+    async def _aapply_causal_include_original_rule(
+        self, result: ClaimAnalysisOutput, original_claim: str
+    ) -> ClaimAnalysisOutput:
+        if result.relationship_type != "CAUSAL":
+            return result
+
+        original = original_claim.strip()
+        if not original:
+            return result
+
+        rewritten = await self._anormalize_causal_original_claim(original, result.sub_claims)
+        rewritten = rewritten.strip()
+        if not rewritten:
+            rewritten = original
+
+        original_norm = original.lower()
+        rewritten_norm = rewritten.lower()
+        filtered = [
+            s
+            for s in result.sub_claims
+            if s.strip().lower() not in {original_norm, rewritten_norm}
+        ]
+        filtered.append(rewritten)
+        result.sub_claims = filtered
+        return result
 
     def analyze(self, original_claim: str) -> ClaimAnalysisOutput:
         claim = original_claim.strip()
         if not claim:
             raise ValueError("original_claim must not be empty.")
         raw = self._chain.invoke({"original_claim": claim})
-        return ClaimAnalysisOutput.model_validate(raw)
+        result = ClaimAnalysisOutput.model_validate(raw)
+        return self._apply_causal_include_original_rule(result, claim)
 
     async def aanalyze(self, original_claim: str) -> ClaimAnalysisOutput:
         claim = original_claim.strip()
         if not claim:
             raise ValueError("original_claim must not be empty.")
         raw = await self._chain.ainvoke({"original_claim": claim})
-        return ClaimAnalysisOutput.model_validate(raw)
+        result = ClaimAnalysisOutput.model_validate(raw)
+        return await self._aapply_causal_include_original_rule(result, claim)
 
 
 class ClaimAnalysisState(TypedDict, total=False):

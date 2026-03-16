@@ -58,6 +58,67 @@ HUMAN_PROMPT = """Relationship type: {relationship_type}
 Sub-claim: {sub_claim}
 """
 
+CAUSAL_ORIGINAL_SYSTEM_PROMPT = """
+You are a query planner for a fact-checking retrieval system.
+
+Task:
+Given a CAUSAL relation subclaim, generate search queries to retrieve evidence about the causal relationship between the proposed cause and the proposed effect.
+
+Query requirements:
+- Generate 2 to 4 queries.
+- The first query must be a relation phrase query.
+- The second query must directly test the causal link in the subclaim.
+
+Optional queries:
+- 1 Bag-of-Words query
+- 1 Verification query
+
+Query types:
+
+Relation query  
+A short entity–relation phrase designed to match titles or factual statements.  
+Prefer phrases describing impact, effect, or connection between the cause and effect.
+
+Examples:
+- "COVID impact airline ticket prices"
+- "pandemic effect on airline fares"
+- "COVID airline ticket price increase"
+
+Causal query  
+A simple question that directly tests whether the cause produced the effect.
+
+Examples:
+- "Did COVID cause airline ticket prices to increase?"
+- "Did the pandemic lead to higher airline fares?"
+
+Bag-of-Words query  
+3–6 important keywords capturing the main entities and events.
+
+Examples:
+- "COVID airline ticket price increase"
+- "pandemic airfare surge 2021"
+
+Verification query  
+A short yes/no claim-check question.
+
+Rules:
+- Queries must resemble how information appears in web titles or factual statements.
+- Avoid literal paraphrases of the subclaim.
+- Prefer simple wording commonly used in news or research titles.
+- Keep queries concise (phrases ≈3–8 words, questions <12 words).
+- The relation query must include both the cause and the effect.
+- The causal query must explicitly mention both the proposed cause and the proposed effect.
+- If the subclaim includes a specific year/date, keep it in at least one of the first two queries.
+- Avoid generating multiple queries that only differ in word order.
+
+Output mapping:
+- Put the relation query in `relation_query`.
+- Put the causal-link test question in `factoid_query`.
+- Put optional queries in `bag_of_words_query` and `verification_query`.
+
+{format_instructions}
+"""
+
 
 class SearchPlannerOutput(BaseModel):
     factoid_query: str = Field(min_length=1)
@@ -73,6 +134,14 @@ class SearchPlannerOutput(BaseModel):
             queries.append(self.verification_query)
         return [q.strip() for q in queries if q and q.strip()]
 
+    def to_causal_query_list(self) -> list[str]:
+        queries = [self.relation_query, self.factoid_query]
+        if self.bag_of_words_query:
+            queries.append(self.bag_of_words_query)
+        if self.verification_query:
+            queries.append(self.verification_query)
+        return [q.strip() for q in queries if q and q.strip()]
+
 
 class SearchPlanner:
     def __init__(self, llm: BaseChatModel) -> None:
@@ -81,6 +150,10 @@ class SearchPlanner:
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
         self._chain = self._prompt | llm | self._parser
+        self._causal_original_prompt = ChatPromptTemplate.from_messages(
+            [("system", CAUSAL_ORIGINAL_SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
+        ).partial(format_instructions=self._parser.get_format_instructions())
+        self._causal_original_chain = self._causal_original_prompt | llm | self._parser
 
     def plan(self, relationship_type: str, sub_claim: str) -> SearchPlannerOutput:
         if not sub_claim.strip():
@@ -88,6 +161,17 @@ class SearchPlanner:
         raw = self._chain.invoke(
             {
                 "relationship_type": relationship_type.strip(),
+                "sub_claim": sub_claim.strip(),
+            }
+        )
+        return SearchPlannerOutput.model_validate(raw)
+
+    def plan_causal_original(self, sub_claim: str) -> SearchPlannerOutput:
+        if not sub_claim.strip():
+            raise ValueError("sub_claim must not be empty.")
+        raw = self._causal_original_chain.invoke(
+            {
+                "relationship_type": "CAUSAL",
                 "sub_claim": sub_claim.strip(),
             }
         )

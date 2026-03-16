@@ -27,6 +27,12 @@ TAVILY_REQUEST_TIMEOUT: Final[float] = 30.0
 SUBCLAIM_SEARCH_MAX_WORKERS: Final[int] = 4
 QUERY_SEARCH_MAX_WORKERS: Final[int] = 4
 
+RERANKER_MODEL_NAME: Final[str] = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+RERANKER_BATCH_SIZE: Final[int] = 32
+RERANKER_MAX_WORKERS: Final[int] = 4
+
+CONTEXT_EVIDENCE_TOP_K: Final[int] = 5
+
 
 def load_project_env() -> None:
     load_dotenv(_ENV_PATH)
@@ -74,4 +80,9 @@ def create_small_llm() -> ChatOpenAI:
 
 def create_search_planner_llm() -> ChatOpenAI:
     # Fixed stage routing: search planner uses the large model.
+    return create_large_llm()
+
+
+def create_reasoning_llm() -> ChatOpenAI:
+    # Fixed stage routing: reasoning uses the large model.
     return create_large_llm()

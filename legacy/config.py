@@ -10,7 +10,7 @@ _ENV_PATH = os.path.join(_PROCESS_DIR, ".env")
 
 CLAIM_EXTRACTION_MODEL: Final[str] = "gpt-4o-mini"
 KEYWORDS_MODEL: Final[str] = "gpt-5.2"
-SEARCH_TOP_K: Final[int] = 2
+SEARCH_TOP_K: Final[int] = 1
 SEARCH_TOPIC: Final[str] = "general"
 SEARCH_DEPTH: Final[str] = "basic"
 SEARCH_INCLUDE_ANSWER: Final[bool] = False

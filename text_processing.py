@@ -2,6 +2,9 @@
 
 import html
 import re
+from typing import Any
+
+import spacy
 
 WEB_NOISE_PATTERNS = [
     r"\bread more\b[:\s-]*",
@@ -13,6 +16,9 @@ WEB_NOISE_PATTERNS = [
     r"\blog in\b[:\s-]*",
     r"\badvertisement\b[:\s-]*",
 ]
+
+_NLP = spacy.blank("xx")
+_NLP.add_pipe("sentencizer", config={"punct_chars": [".", "!", "?", "。", "！", "？"]})
 
 
 def clean_text(text: str) -> str:
@@ -55,15 +61,29 @@ def build_cleaned_text(title: str, content: str) -> str:
     return title or content
 
 
-def process_search_results(search_results: list[dict[str, str]]) -> list[dict[str, str]]:
-    processed: list[dict[str, str]] = []
+def split_into_sentences(text: str) -> list[str]:
+    if not text:
+        return []
+    doc = _NLP(text)
+    return [sent.text.strip() for sent in doc.sents if sent.text and sent.text.strip()]
+
+
+def build_sentence_chunks(text: str) -> list[dict[str, Any]]:
+    sentences = split_into_sentences(text)
+    return [{"sentence_index": idx, "text": sentence} for idx, sentence in enumerate(sentences)]
+
+
+def process_search_results(search_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    processed: list[dict[str, Any]] = []
     for item in search_results:
         title = clean_text(str(item.get("title", "")))
         content = clean_text(str(item.get("content", "")))
+        cleaned_text = build_cleaned_text(title, content)
 
         row = dict(item)
         row["title"] = title
         row["content"] = content
-        row["cleaned_text"] = build_cleaned_text(title, content)
+        row["cleaned_text"] = cleaned_text
+        row["sentence_chunks"] = build_sentence_chunks(cleaned_text)
         processed.append(row)
     return processed
