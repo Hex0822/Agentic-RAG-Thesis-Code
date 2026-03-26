@@ -7,7 +7,7 @@ from pathlib import Path
 from config import ensure_openai_env, ensure_tavily_env, load_project_env
 from pipeline import run_pipeline
 
-INPUT_CLAIM = "The American film, television and theater actress who was a star in the film the Matchmaker and also received the 40th AFI Life Achievement Award was born April 24, 1934."
+INPUT_CLAIM = "In Nigeria \u2026 in terms of revenue share, 20% goes to the local government." #fake news claim for testing
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 
 

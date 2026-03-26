@@ -31,6 +31,7 @@ RERANKER_MODEL_NAME: Final[str] = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 RERANKER_BATCH_SIZE: Final[int] = 32
 RERANKER_MAX_WORKERS: Final[int] = 4
 
+# Number of top evidence chunks to keep for each sub-claim when passing to the ccontext stage.
 CONTEXT_EVIDENCE_TOP_K: Final[int] = 5
 
 

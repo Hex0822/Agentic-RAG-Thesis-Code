@@ -1,4 +1,17 @@
+#
+#
+# Mar.17 2026
+# 这里还没有完全处理好，重构了search plan main，但是对于relation还没有完全处理好
+# 直接在main后面加上对realtion更好？还是分开更好？还是main现在已经足够强大可一讨论relation了？
+#
+#
+#
+#
+
+
 """Search planner for building retrieval queries from a single sub-claim."""
+
+from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import JsonOutputParser
@@ -8,48 +21,129 @@ from pydantic import BaseModel, Field
 SYSTEM_PROMPT = """
 You are a query planner for a fact-checking retrieval system.
 
-Task:
-Given a subclaim, generate search queries to retrieve factual evidence that can support or refute the claim.
+Your task is to plan search queries for verifying a subclaim.
+
+The goal is NOT to rewrite the claim in multiple ways.
+The goal is to identify the MINIMAL SUFFICIENT INFORMATION SET needed to determine whether the subclaim is true or false, and then generate search queries that retrieve that information.
+
+A minimal sufficient information set means:
+- the smallest set of factual variables, attributes, relations, or event properties
+- whose values are enough to directly verify or refute the subclaim
+- without requiring unnecessary background knowledge, concept definitions, or further decomposition
+
+Important:
+- Do NOT decompose into general semantic understanding questions
+- Do NOT ask for definitions of entities or relations
+- Do NOT expand into irrelevant world knowledge
+- Stop at the level where knowing the value of the variable(s) is enough to judge the claim
+
+Examples of what NOT to do:
+- For "YouTube was founded in 2005", do NOT generate:
+  - "What is YouTube?"
+  - "Is YouTube a company?"
+  - "What does founded mean?"
+- Instead, identify the minimal sufficient information set:
+  - founding_date(YouTube)
+
+Core procedure:
+
+Step 1: Analyze the subclaim
+Identify:
+- Subject
+- Relation
+- Object
+- Constraints (time, location, role, quantity, comparison, negation, etc.)
+
+Step 2: Identify the minimal sufficient information set
+Determine the smallest set of verifiable variables needed to decide the claim.
+
+Guidelines:
+- For a simple atomic claim, this is often one variable
+- If one variable is not enough, use a very small set of variables
+- Only include variables that are necessary for deciding truth or falsity
+- Each variable should pass this test:
+  "If I know the value of this variable, can I directly determine whether the claim is true or false, either alone or together with the other selected variables?"
+
+Examples:
+- "YouTube was founded in 2005"
+  -> variable: founding_date(YouTube)
+- "Tesla acquired SolarCity in 2016"
+  -> variables:
+    - acquisition_event(Tesla, SolarCity)
+    - acquisition_date(Tesla, SolarCity)
+- "Tim Cook is the CEO of Apple"
+  -> variable: CEO(Apple)
+
+Step 3: Generate search queries from the minimal sufficient information set
 
 Query requirements:
-
 1. Generate at least 2 queries and at most 4 queries.
-
 2. The first two queries must be:
    - 1 Factoid query
    - 1 Relation query
-
-3. You may optionally add (It's ok to not to include these if factoid and relation queries are sufficient):
-   - 1 Bag-of-Words query
+3. You may optionally add:
+   - 1 Direct Statement query
    - 1 Verification query
-
 4. The total number of queries must not exceed 4.
 
 Query type definitions:
 
 Factoid query
-A concise WH-style factual question (Who / What / When / Where).
-Prefer questions that identify key entities, ownership, founding, acquisition, or dates.
+- A concise WH-style factual question
+- It should ask for the value of the most important variable in the minimal sufficient information set
+- Prefer questions like Who / What / When / Where depending on the target variable
 
 Relation query
-A short entity–relation phrase suitable for matching titles or factual statements.
+- A short entity–relation phrase
+- It should target the same variable or another necessary variable in the minimal sufficient information set
+- Suitable for matching titles, snippets, factual tables, or short declarative statements
 
-Bag-of-Words query
-A short lexical query containing 3–6 important content words (not a full sentence).
+Direct Statement query
+- A short declarative expression of the target fact
+- Useful for sentence-level matching of explicit evidence
+- Prefer direct factual wording likely to appear in articles or knowledge pages
 
 Verification query
-A short yes/no-style claim-check question directly testing the subclaim.
+- A short yes/no-style claim-check question
+- Use only if it adds a meaningful retrieval angle beyond the factoid and relation queries
 
 Generation rules:
+- Queries must target the minimal sufficient information set, not general background knowledge
+- Each query should retrieve a distinct evidence angle for the SAME required variable(s), or cover another necessary variable in the set
+- Do NOT generate queries that merely restate the claim with superficial wording changes
+- Prefer queries likely to match web page titles, knowledge pages, factual sentences, or snippets
+- Do NOT generate explanatory, causal, procedural, or definitional questions unless they are strictly required for verification
+- Keep queries short, precise, and retrieval-friendly
+- For simple atomic claims, prefer queries centered on the single most important variable
+- If multiple variables are required, ensure the query set collectively covers them
 
-- Queries must be independent and suitable for parallel search.
-- Each query should provide a different retrieval perspective (e.g., entity fact, entity relation, or claim verification).
-- Avoid generating queries that only differ in word order or minor phrasing changes.
-- Prefer queries likely to appear in web page titles, factual sentences, or snippets.
-- Do not generate explanatory or procedural questions (avoid "why" or "how to").
-- Keep queries short, precise, and retrieval-friendly.
-- When possible, prefer WH-style questions over yes/no questions for verification.
-- Prefer WH-style factoid questions that directly ask for verifiable facts (e.g., who founded X, when did Y happen, who owns Z).
+Output format:
+{
+  "subclaim_analysis": {
+    "subject": "...",
+    "relation": "...",
+    "object": "...",
+    "constraints": ["..."]
+  },
+  "minimal_sufficient_information_set": [
+    {
+      "variable": "...",
+      "why_needed": "..."
+    }
+  ],
+  "query_plan": [
+    {
+      "type": "factoid",
+      "target_variable": "...",
+      "query": "..."
+    },
+    {
+      "type": "relation",
+      "target_variable": "...",
+      "query": "..."
+    }
+  ]
+}
 
 {format_instructions}
 """
@@ -58,89 +152,94 @@ HUMAN_PROMPT = """Relationship type: {relationship_type}
 Sub-claim: {sub_claim}
 """
 
-CAUSAL_ORIGINAL_SYSTEM_PROMPT = """
-You are a query planner for a fact-checking retrieval system.
+CAUSAL_ORIGINAL_SYSTEM_PROMPT = (
+    SYSTEM_PROMPT
+    + """
 
-Task:
-Given a CAUSAL relation subclaim, generate search queries to retrieve evidence about the causal relationship between the proposed cause and the proposed effect.
-
-Query requirements:
-- Generate 2 to 4 queries.
-- The first query must be a relation phrase query.
-- The second query must directly test the causal link in the subclaim.
-
-Optional queries:
-- 1 Bag-of-Words query
-- 1 Verification query
-
-Query types:
-
-Relation query  
-A short entity–relation phrase designed to match titles or factual statements.  
-Prefer phrases describing impact, effect, or connection between the cause and effect.
-
-Examples:
-- "COVID impact airline ticket prices"
-- "pandemic effect on airline fares"
-- "COVID airline ticket price increase"
-
-Causal query  
-A simple question that directly tests whether the cause produced the effect.
-
-Examples:
-- "Did COVID cause airline ticket prices to increase?"
-- "Did the pandemic lead to higher airline fares?"
-
-Bag-of-Words query  
-3–6 important keywords capturing the main entities and events.
-
-Examples:
-- "COVID airline ticket price increase"
-- "pandemic airfare surge 2021"
-
-Verification query  
-A short yes/no claim-check question.
-
-Rules:
-- Queries must resemble how information appears in web titles or factual statements.
-- Avoid literal paraphrases of the subclaim.
-- Prefer simple wording commonly used in news or research titles.
-- Keep queries concise (phrases ≈3–8 words, questions <12 words).
-- The relation query must include both the cause and the effect.
-- The causal query must explicitly mention both the proposed cause and the proposed effect.
-- If the subclaim includes a specific year/date, keep it in at least one of the first two queries.
-- Avoid generating multiple queries that only differ in word order.
-
-Output mapping:
-- Put the relation query in `relation_query`.
-- Put the causal-link test question in `factoid_query`.
-- Put optional queries in `bag_of_words_query` and `verification_query`.
-
-{format_instructions}
+Additional guidance for CAUSAL relation subclaims:
+- Ensure the minimal sufficient information set explicitly covers:
+  1) cause-side event/property
+  2) effect-side event/property
+  3) the causal link between them
+- Keep query count compact while still covering all three where necessary.
 """
+)
+
+
+class SubclaimAnalysis(BaseModel):
+    subject: str = Field(min_length=1)
+    relation: str = Field(min_length=1)
+    object: str = Field(min_length=1)
+    constraints: list[str] = Field(default_factory=list)
+
+
+class MinimalSufficientInformationItem(BaseModel):
+    variable: str = Field(min_length=1)
+    why_needed: str = Field(min_length=1)
+
+
+class QueryPlanItem(BaseModel):
+    type: Literal["factoid", "relation", "direct_statement", "verification"]
+    target_variable: str = Field(min_length=1)
+    query: str = Field(min_length=1)
 
 
 class SearchPlannerOutput(BaseModel):
-    factoid_query: str = Field(min_length=1)
-    relation_query: str = Field(min_length=1)
-    bag_of_words_query: str | None = None
-    verification_query: str | None = None
+    subclaim_analysis: SubclaimAnalysis
+    minimal_sufficient_information_set: list[MinimalSufficientInformationItem] = Field(min_length=1)
+    query_plan: list[QueryPlanItem] = Field(min_length=2, max_length=4)
+
+    def _deduped_query_plan(self) -> list[QueryPlanItem]:
+        seen: set[str] = set()
+        deduped: list[QueryPlanItem] = []
+        for item in self.query_plan:
+            query = item.query.strip()
+            if not query:
+                continue
+            key = query.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(
+                QueryPlanItem(
+                    type=item.type,
+                    target_variable=item.target_variable.strip(),
+                    query=query,
+                )
+            )
+        return deduped
+
+    def _ordered_queries(self, type_priority: dict[str, int]) -> list[str]:
+        deduped = self._deduped_query_plan()
+        indexed_items = list(enumerate(deduped))
+        indexed_items.sort(
+            key=lambda pair: (
+                type_priority.get(pair[1].type, 99),
+                pair[0],
+            )
+        )
+        queries = [item.query for _, item in indexed_items if item.query]
+        return queries[:4]
 
     def to_query_list(self) -> list[str]:
-        queries = [self.factoid_query, self.relation_query]
-        if self.bag_of_words_query:
-            queries.append(self.bag_of_words_query)
-        if self.verification_query:
-            queries.append(self.verification_query)
-        return [q.strip() for q in queries if q and q.strip()]
+        return self._ordered_queries(
+            {
+                "factoid": 0,
+                "relation": 1,
+                "direct_statement": 2,
+                "verification": 3,
+            }
+        )
 
     def to_causal_query_list(self) -> list[str]:
-        queries = [self.relation_query, self.factoid_query]
-        if self.bag_of_words_query:
-            queries.append(self.bag_of_words_query)
-        if self.verification_query:
-            queries.append(self.verification_query)
-        return [q.strip() for q in queries if q and q.strip()]
+        return self._ordered_queries(
+            {
+                "relation": 0,
+                "factoid": 1,
+                "direct_statement": 2,
+                "verification": 3,
+            }
+        )
 
 
 class SearchPlanner:
@@ -150,6 +249,7 @@ class SearchPlanner:
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
         self._chain = self._prompt | llm | self._parser
+
         self._causal_original_prompt = ChatPromptTemplate.from_messages(
             [("system", CAUSAL_ORIGINAL_SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())

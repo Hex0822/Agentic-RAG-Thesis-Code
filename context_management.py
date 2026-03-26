@@ -161,13 +161,15 @@ def apply_reasoning_feedback(
     latest_round["llm_feedback"] = feedback_list
     latest_round["reasoning_output"] = reasoning_output
 
-    need_more_search = bool(reasoning_output.get("need_more_search", False))
-    next_action = "RETRIEVE_MORE" if need_more_search else "READY_FOR_REASONING"
+    search_needed = bool(
+        reasoning_output.get("search_needed", reasoning_output.get("need_more_search", False))
+    )
+    next_action = "RETRIEVE_MORE" if search_needed else "READY_FOR_REASONING"
     latest_round["next_action"] = next_action
 
     updated["rounds"] = rounds
     updated["latest_round"] = len(rounds)
     updated["overall_next_action"] = next_action
-    updated["reasoning_ready"] = not need_more_search
+    updated["reasoning_ready"] = not search_needed
     updated["subclaim_contexts"] = latest_round.get("subclaim_contexts", [])
     return updated

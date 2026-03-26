@@ -73,6 +73,11 @@ def _search_planner_node(planner: SearchPlanner):
             return {
                 "sub_claim": sub_claim,
                 "relationship_type": relationship_type,
+                "subclaim_analysis": result.subclaim_analysis.model_dump(),
+                "minimal_sufficient_information_set": [
+                    item.model_dump() for item in result.minimal_sufficient_information_set
+                ],
+                "query_plan": [item.model_dump() for item in result.query_plan],
                 "queries": queries,
             }
 
@@ -150,6 +155,16 @@ def _reasoning_node(reasoner: ReasoningEngine):
         subclaim_contexts = context_data.get("subclaim_contexts", [])
         if not isinstance(subclaim_contexts, list):
             subclaim_contexts = []
+        reasoning_evidence_contexts: list[dict[str, Any]] = []
+        for item in subclaim_contexts:
+            if not isinstance(item, dict):
+                continue
+            reasoning_evidence_contexts.append(
+                {
+                    "planned_queries": item.get("planned_queries", []),
+                    "evidence_chunks": item.get("evidence_chunks", []),
+                }
+            )
 
         previous_round_summary = ""
         previous_round_missing_information = ""
@@ -160,17 +175,28 @@ def _reasoning_node(reasoner: ReasoningEngine):
                 prev_reasoning = prev_round.get("reasoning_output", {})
                 if isinstance(prev_reasoning, dict):
                     previous_round_summary = str(
-                        prev_reasoning.get("round_summary", "")
+                        prev_reasoning.get("reasoning_note", prev_reasoning.get("round_summary", ""))
                     ).strip()
-                    previous_round_missing_information = str(
-                        prev_reasoning.get("missing_information", "")
-                    ).strip()
+                    prev_missing = prev_reasoning.get("missing_information", "")
+                    if isinstance(prev_missing, list):
+                        missing_questions: list[str] = []
+                        for item in prev_missing:
+                            if isinstance(item, dict):
+                                question = str(item.get("question", "")).strip()
+                                if question:
+                                    missing_questions.append(question)
+                            else:
+                                text = str(item).strip()
+                                if text:
+                                    missing_questions.append(text)
+                        previous_round_missing_information = "; ".join(missing_questions)
+                    else:
+                        previous_round_missing_information = str(prev_missing).strip()
 
         reasoning = reasoner.reason(
             original_claim=str(state.get("original_claim", "")),
             relationship_type=str(state.get("relationship_type", "")),
-            sub_claims=[str(s) for s in state.get("sub_claims", []) if str(s).strip()],
-            subclaim_contexts=subclaim_contexts,
+            subclaim_contexts=reasoning_evidence_contexts,
             previous_round_summary=previous_round_summary,
             previous_round_missing_information=previous_round_missing_information,
         ).model_dump()

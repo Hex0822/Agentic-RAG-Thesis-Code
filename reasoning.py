@@ -1,7 +1,7 @@
 """LLM reasoning over top-k evidence chunks."""
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import JsonOutputParser
@@ -9,30 +9,47 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 SYSTEM_PROMPT = """
-You are a fact-checking reasoning controller.
+You are a reasoning agent in a multi-step fact-checking retrieval system.
 
-Input:
-- Original claim
-- Relationship type
-- Sub-claims
-- Previous round summary (if available)
-- Previous round missing information (if available)
-- Top-k evidence chunks for each sub-claim
+Your task is to analyze the current evidence and determine:
+1) What information has already been established.
+2) What key information is still missing.
+3) What search queries should be generated to retrieve the missing information.
 
-Task:
-1) Summarize what this round has established.
-2) Decide whether another retrieval round is needed.
-3) If another round is needed, summarize what information is still missing.
-4) If another round is needed, provide short follow-up search queries.
+The system performs iterative retrieval. Your output will guide the next search round.
+
+Input includes grouped evidence.
+Each evidence group contains:
+- the query used to retrieve it
+- top-k evidence chunks (title + snippet)
+
+Reasoning Instructions:
+1. Carefully read the original claim.
+2. Review the previous round summary and missing information (if available) to understand the current reasoning state.
+3. Examine the grouped evidence and determine what new facts can be reliably established.
+4. Produce a concise summary of what is currently known, combining:
+   - previously established information
+   - new evidence from this round.
+5. Identify what important information is still missing that is necessary to verify or refute the claim.
+6. If the current evidence is already sufficient to logically determine the claim (supported or refuted), mark that no further search is needed.
+7. Otherwise, generate targeted search queries to retrieve evidence for the missing information.
+
+Query Generation Rules:
+- Generate queries only for information that is still missing.
+- Queries must be concise and retrieval-friendly.
+- Prefer factual or comparison-oriented queries.
+- Avoid vague or conversational queries.
+- Each missing information item should have 1–3 search queries.
+- Total queries should not exceed 6.
+
+Consistency Rules:
+- `search_needed = false` -> `missing_information` must be an empty list `[]`.
+- `search_needed = true` -> `missing_information` must contain at least 1 item.
+- If `search_needed = true`, each `missing_information` item must include at least 1 query.
+- The `reasoning_note` must be consistent with `search_needed` and `missing_information`.
 
 Rules:
-- Base your judgment only on provided evidence chunks.
-- If previous-round summary/missing information is provided, use it as compressed memory.
-- Do not request already-resolved information unless new evidence creates conflict.
-- Keep summaries concise and factual.
-- If evidence is conflicting, mention the conflict.
-- `suggested_queries` must be 0 to 6 short queries.
-- If `need_more_search` is false, `suggested_queries` should be an empty list.
+- Base your judgment only on provided evidence chunks and previous round context.
 
 {format_instructions}
 """
@@ -42,9 +59,6 @@ HUMAN_PROMPT = """Original claim:
 
 Relationship type:
 {relationship_type}
-
-Sub-claims:
-{sub_claims_json}
 
 Previous round summary:
 {previous_round_summary}
@@ -58,20 +72,25 @@ Evidence contexts:
 
 
 class ReasoningOutput(BaseModel):
-    need_more_search: bool = Field(
-        description="Whether another retrieval round is needed before final reasoning."
-    )
-    round_summary: str = Field(
-        min_length=1,
-        description="What this retrieval round has established so far.",
-    )
-    missing_information: str = Field(
-        min_length=1,
-        description="What evidence is still missing or uncertain.",
-    )
-    suggested_queries: list[str] = Field(
+    class MissingInformationItem(BaseModel):
+        question: str = Field(min_length=1)
+        importance: Literal["critical", "helpful"] = Field(default="critical")
+        queries: list[str] = Field(default_factory=list)
+
+    known_information: list[str] = Field(
         default_factory=list,
-        description="Follow-up search queries (0 to 6).",
+        description="Information already established from previous and current rounds.",
+    )
+    missing_information: list[MissingInformationItem] = Field(
+        default_factory=list,
+        description="Missing information items with question, importance, and queries.",
+    )
+    search_needed: bool = Field(
+        description="Whether another retrieval round is needed."
+    )
+    reasoning_note: str = Field(
+        min_length=1,
+        description="Brief explanation of whether more evidence is needed and why.",
     )
 
 
@@ -87,7 +106,6 @@ class ReasoningEngine:
         self,
         original_claim: str,
         relationship_type: str,
-        sub_claims: list[str],
         subclaim_contexts: list[dict[str, Any]],
         previous_round_summary: str = "",
         previous_round_missing_information: str = "",
@@ -96,7 +114,6 @@ class ReasoningEngine:
             {
                 "original_claim": original_claim.strip(),
                 "relationship_type": relationship_type.strip(),
-                "sub_claims_json": json.dumps(sub_claims, ensure_ascii=False, indent=2),
                 "previous_round_summary": previous_round_summary.strip() or "N/A",
                 "previous_round_missing_information": (
                     previous_round_missing_information.strip() or "N/A"
@@ -107,9 +124,43 @@ class ReasoningEngine:
             }
         )
         result = ReasoningOutput.model_validate(raw)
-        result.suggested_queries = [q.strip() for q in result.suggested_queries if q and q.strip()][
-            :6
-        ]
-        if not result.need_more_search:
-            result.suggested_queries = []
+        result.known_information = [k.strip() for k in result.known_information if k and k.strip()]
+
+        cleaned_missing: list[ReasoningOutput.MissingInformationItem] = []
+        total_queries = 0
+        for item in result.missing_information:
+            question = item.question.strip()
+            if not question:
+                continue
+
+            queries = [q.strip() for q in item.queries if q and q.strip()][:3]
+            remaining = max(0, 6 - total_queries)
+            if remaining == 0:
+                break
+            queries = queries[:remaining]
+            if not queries:
+                continue
+            total_queries += len(queries)
+
+            cleaned_missing.append(
+                ReasoningOutput.MissingInformationItem(
+                    question=question,
+                    importance=item.importance,
+                    queries=queries,
+                )
+            )
+
+        # Enforce strict consistency from structured fields only.
+        # search_needed is derived from whether valid missing items remain after cleaning.
+        result.missing_information = cleaned_missing
+        result.search_needed = len(cleaned_missing) > 0
+
+        note = result.reasoning_note.strip()
+        if result.search_needed:
+            suffix = "Final decision: additional retrieval is needed."
+            result.reasoning_note = f"{note} {suffix}".strip() if note else suffix
+        else:
+            suffix = "Final decision: no additional retrieval is needed."
+            result.reasoning_note = f"{note} {suffix}".strip() if note else suffix
+
         return result
