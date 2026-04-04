@@ -1,5 +1,3 @@
-"""Direct run entrypoint (no CLI args)."""
-
 import json
 from datetime import datetime
 from pathlib import Path
@@ -7,7 +5,9 @@ from pathlib import Path
 from config import ensure_openai_env, ensure_tavily_env, load_project_env
 from pipeline import run_pipeline
 
-INPUT_CLAIM = "In Nigeria \u2026 in terms of revenue share, 20% goes to the local government." #fake news claim for testing
+INPUT_CLAIM = "由于JJ娱乐公司向大模型投放大量广告，315晚会揭露了大语言模型投毒事件" #fake news claim for testing
+
+
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 
 

@@ -33,6 +33,7 @@ RERANKER_MAX_WORKERS: Final[int] = 4
 
 # Number of top evidence chunks to keep for each sub-claim when passing to the ccontext stage.
 CONTEXT_EVIDENCE_TOP_K: Final[int] = 5
+REASONING_MAX_ROUNDS: Final[int] = 3
 
 
 def load_project_env() -> None:

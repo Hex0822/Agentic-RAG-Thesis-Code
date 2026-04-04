@@ -118,32 +118,32 @@ Generation rules:
 - If multiple variables are required, ensure the query set collectively covers them
 
 Output format:
-{
-  "subclaim_analysis": {
+{{
+  "subclaim_analysis": {{
     "subject": "...",
     "relation": "...",
     "object": "...",
     "constraints": ["..."]
-  },
+  }},
   "minimal_sufficient_information_set": [
-    {
+    {{
       "variable": "...",
       "why_needed": "..."
-    }
+    }}
   ],
   "query_plan": [
-    {
+    {{
       "type": "factoid",
       "target_variable": "...",
       "query": "..."
-    },
-    {
+    }},
+    {{
       "type": "relation",
       "target_variable": "...",
       "query": "..."
-    }
+    }}
   ]
-}
+}}
 
 {format_instructions}
 """

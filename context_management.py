@@ -48,6 +48,7 @@ def _build_subclaim_context(
 ) -> dict[str, Any]:
     top_ranked = ranked_sentences[:CONTEXT_EVIDENCE_TOP_K]
     evidence_chunks: list[dict[str, Any]] = []
+    planned_queries = query_lookup.get(sub_claim, [])
 
     for item in top_ranked:
         result_index = int(item.get("result_index", -1))
@@ -71,7 +72,7 @@ def _build_subclaim_context(
 
     return {
         "sub_claim": sub_claim,
-        "planned_queries": query_lookup.get(sub_claim, []),
+        "planned_queries": planned_queries,
         "evidence_chunks": evidence_chunks,
     }
 

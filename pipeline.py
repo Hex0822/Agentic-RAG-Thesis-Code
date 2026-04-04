@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 
 from claim_analysis import ClaimAnalyzer
 from config import (
+    REASONING_MAX_ROUNDS,
     SUBCLAIM_SEARCH_MAX_WORKERS,
     create_reasoning_llm,
     create_search_planner_llm,
@@ -51,9 +52,67 @@ def _claim_analysis_node(analyzer: ClaimAnalyzer):
     return _node
 
 
+def _build_followup_search_plan_from_context(
+    previous_context: dict[str, Any],
+    relationship_type: str,
+) -> list[dict[str, Any]]:
+    rounds = previous_context.get("rounds", [])
+    if not isinstance(rounds, list) or not rounds:
+        return []
+
+    latest_round = rounds[-1]
+    if not isinstance(latest_round, dict):
+        return []
+
+    reasoning_output = latest_round.get("reasoning_output", {})
+    if not isinstance(reasoning_output, dict):
+        return []
+
+    search_needed = bool(reasoning_output.get("search_needed", False))
+    if not search_needed:
+        return []
+
+    missing_info = reasoning_output.get("missing_information", [])
+    if not isinstance(missing_info, list):
+        return []
+
+    followup_plan: list[dict[str, Any]] = []
+    for item in missing_info:
+        if not isinstance(item, dict):
+            continue
+
+        question = str(item.get("question", "")).strip()
+        raw_queries = item.get("queries", [])
+        if not question or not isinstance(raw_queries, list):
+            continue
+
+        queries = [str(q).strip() for q in raw_queries if str(q).strip()]
+
+        followup_plan.append(
+            {
+                "sub_claim": question,
+                "relationship_type": relationship_type,
+                "is_followup": True,
+                "query_source": "reasoning_missing_information",
+                "queries": queries,
+            }
+        )
+
+    return followup_plan
+
+
 def _search_planner_node(planner: SearchPlanner):
     def _node(state: PipelineState) -> dict[str, Any]:
         relationship_type = state.get("relationship_type", "")
+        previous_context = state.get("context_management", {})
+        if isinstance(previous_context, dict):
+            followup_plan = _build_followup_search_plan_from_context(
+                previous_context=previous_context,
+                relationship_type=relationship_type,
+            )
+            if followup_plan:
+                return {"search_plan": followup_plan}
+
         sub_claims = [s for s in state.get("sub_claims", []) if s and s.strip()]
 
         if not sub_claims:
@@ -166,39 +225,38 @@ def _reasoning_node(reasoner: ReasoningEngine):
                 }
             )
 
-        previous_round_summary = ""
-        previous_round_missing_information = ""
+        previous_rounds_knowledge: list[dict[str, Any]] = []
         rounds = context_data.get("rounds", [])
         if isinstance(rounds, list) and len(rounds) >= 2:
-            prev_round = rounds[-2]
-            if isinstance(prev_round, dict):
-                prev_reasoning = prev_round.get("reasoning_output", {})
-                if isinstance(prev_reasoning, dict):
-                    previous_round_summary = str(
-                        prev_reasoning.get("reasoning_note", prev_reasoning.get("round_summary", ""))
-                    ).strip()
-                    prev_missing = prev_reasoning.get("missing_information", "")
-                    if isinstance(prev_missing, list):
-                        missing_questions: list[str] = []
-                        for item in prev_missing:
-                            if isinstance(item, dict):
-                                question = str(item.get("question", "")).strip()
-                                if question:
-                                    missing_questions.append(question)
-                            else:
-                                text = str(item).strip()
-                                if text:
-                                    missing_questions.append(text)
-                        previous_round_missing_information = "; ".join(missing_questions)
-                    else:
-                        previous_round_missing_information = str(prev_missing).strip()
+            for round_item in rounds[:-1]:
+                if not isinstance(round_item, dict):
+                    continue
+                round_reasoning = round_item.get("reasoning_output", {})
+                if not isinstance(round_reasoning, dict):
+                    continue
+
+                known_information = round_reasoning.get("known_information", [])
+                missing_information = round_reasoning.get("missing_information", [])
+                if not isinstance(known_information, list):
+                    known_information = []
+                if not isinstance(missing_information, list):
+                    missing_information = []
+
+                previous_rounds_knowledge.append(
+                    {
+                        "round": int(round_item.get("round", len(previous_rounds_knowledge) + 1)),
+                        "known_information": known_information,
+                        "missing_information": missing_information,
+                        "search_needed": bool(round_reasoning.get("search_needed", False)),
+                        "reasoning_note": str(round_reasoning.get("reasoning_note", "")).strip(),
+                    }
+                )
 
         reasoning = reasoner.reason(
             original_claim=str(state.get("original_claim", "")),
             relationship_type=str(state.get("relationship_type", "")),
             subclaim_contexts=reasoning_evidence_contexts,
-            previous_round_summary=previous_round_summary,
-            previous_round_missing_information=previous_round_missing_information,
+            previous_rounds_knowledge=previous_rounds_knowledge,
         ).model_dump()
 
         updated_context = apply_reasoning_feedback(
@@ -254,6 +312,7 @@ def run_pipeline(
     search_planner_llm: BaseChatModel | None = None,
     reasoning_llm: BaseChatModel | None = None,
     previous_context: dict[str, Any] | None = None,
+    max_rounds: int = REASONING_MAX_ROUNDS,
 ) -> PipelineState:
     """Run the pipeline synchronously and return its final state."""
 
@@ -266,11 +325,29 @@ def run_pipeline(
         search_planner_llm=search_planner_llm,
         reasoning_llm=reasoning_llm,
     )
-    input_state: dict[str, Any] = {"original_claim": claim}
-    if isinstance(previous_context, dict) and previous_context:
-        input_state["context_management"] = previous_context
+    rounds_limit = max(1, int(max_rounds))
+    current_context = previous_context if isinstance(previous_context, dict) else {}
+    final_result: dict[str, Any] | None = None
 
-    result = app.invoke(input_state)
-    if not isinstance(result, dict):
-        raise TypeError("Pipeline returned non-dict result.")
-    return cast(PipelineState, result)
+    for _ in range(rounds_limit):
+        input_state: dict[str, Any] = {"original_claim": claim}
+        if current_context:
+            input_state["context_management"] = current_context
+
+        result = app.invoke(input_state)
+        if not isinstance(result, dict):
+            raise TypeError("Pipeline returned non-dict result.")
+
+        final_result = result
+        current_context = result.get("context_management", {})
+        reasoning_output = result.get("reasoning_output", {})
+        needs_more_search = False
+        if isinstance(reasoning_output, dict):
+            needs_more_search = bool(reasoning_output.get("search_needed", False))
+
+        if not needs_more_search:
+            break
+
+    if final_result is None:
+        raise RuntimeError("Pipeline did not produce a result.")
+    return cast(PipelineState, final_result)
