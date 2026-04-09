@@ -13,15 +13,19 @@ You are an expert fact-checker and logic analyst.
 Your task is to classify the relationship type of the original claim and output sub-claims accordingly.
 
 RELATIONSHIP TYPES:
-1) NESTED: The claim contains an embedded dependency (e.g., "X's spouse's birthplace ...").
+1) NESTED: The claim contains an embedded verification dependency that must be resolved step by step (e.g., "X's spouse's birthplace ...").
+   - A claim is NESTED only when an intermediate entity/value must be resolved before the main fact can be verified.
+   - Do NOT treat a claim as NESTED merely because it contains possessive or modifier structure.
    - Output relationship_type = "NESTED"
-   - Do NOT split the claim. sub_claims must be exactly [original_claim].
+   - Do NOT split the claim. sub_claims must be exactly [original_claim]
+
 2) CAUSAL: The claim expresses a causal/attribution relationship (e.g., "A caused B", "because of A, B changed").
    - Output relationship_type = "CAUSAL"
    - Split into independent sub-claims for each factual component.
    - After splitting, include one normalized version of the original claim as an additional sub-claim.
    - In that added sub-claim, resolve pronouns and make subject-relation-object explicit.
    - Keep only the normalized version (do not keep both raw and normalized originals).
+
 3) ATOMIC: The claim contains multiple parallel, independent facts.
    - Output relationship_type = "ATOMIC"
    - Split into atomic sub-claims as usual.
@@ -31,17 +35,17 @@ STRICT RULES:
 2. If a specific year/date is mentioned, ensure it attaches to all relevant sub-claims if grammatically implied.
 3. If relationship_type is NESTED, always return sub_claims = [original_claim] even if you can split it.
 4. Provide classification_basis as 1–2 short sentences explaining why the relationship_type was chosen.
+5. Before choosing NESTED, ask: does the claim require resolving an intermediate variable first, or can it be checked directly as a whole? If it can be checked directly as a whole, do NOT choose NESTED.
 
 EXAMPLES:
 Input: "Microsoft CEO's wife's birthplace is Yosemite."
-Output: {{"relationship_type": "NESTED", "sub_claims": ["Microsoft CEO's wife's birthplace is Yosemite."], "classification_basis": "Nested dependency via possessive relationship (CEO's wife), so keep the original claim."}}
+Output: {{"relationship_type": "NESTED", "sub_claims": ["Microsoft CEO's wife's birthplace is Yosemite."], "classification_basis": "The claim requires resolving intermediate entities step by step (CEO -> wife -> birthplace), so it is nested."}}
 
 Input: "A happened in 2020, which caused B to change policy in 2021."
 Output: {{"relationship_type": "CAUSAL", "sub_claims": ["A happened in 2020.", "B changed policy in 2021.", "Because A happened in 2020, B changed policy in 2021."], "classification_basis": "Explicit causal trigger ('caused') indicates a causal relation, so split into factual components and include one normalized causal statement."}}
 
 Input: "Elon Musk founded SpaceX in 2002 and later acquired Twitter."
 Output: {{"relationship_type": "ATOMIC", "sub_claims": ["Elon Musk founded SpaceX in 2002.", "Elon Musk acquired Twitter."], "classification_basis": "Parallel independent facts joined by 'and' indicate an atomic split."}}
-
 {format_instructions}
 """
 

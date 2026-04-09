@@ -1,4 +1,4 @@
-"""Sentence reranking by sub-claim using a cross-encoder."""
+"""Sentence reranking using a cross-encoder."""
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -60,13 +60,18 @@ def _score_pairs(pairs: list[list[str]]) -> list[float]:
     return scores
 
 
-def _build_subclaim_candidates(search_results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _build_subclaim_candidates(
+    search_results: list[dict[str, Any]],
+    use_query_target: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
 
     for result_idx, row in enumerate(search_results):
         sub_claim = str(row.get("sub_claim", "")).strip()
         if not sub_claim:
             continue
+        query = str(row.get("query", "")).strip()
+        target_text = query if use_query_target and query else sub_claim
 
         sentence_chunks = row.get("sentence_chunks", [])
         if not isinstance(sentence_chunks, list):
@@ -82,6 +87,7 @@ def _build_subclaim_candidates(search_results: list[dict[str, Any]]) -> dict[str
 
             grouped[sub_claim].append(
                 {
+                    "target_text": target_text,
                     "result_index": result_idx,
                     "sentence_index": int(chunk.get("sentence_index", -1)),
                     "sentence_text": sentence_text,
@@ -99,7 +105,10 @@ def _rerank_one_subclaim(item: tuple[str, list[dict[str, Any]]]) -> dict[str, An
     if not candidates:
         return {"sub_claim": sub_claim, "ranked_sentences": []}
 
-    pairs = [[sub_claim, c["sentence_text"]] for c in candidates]
+    pairs = []
+    for c in candidates:
+        target_text = str(c.get("target_text", "")).strip() or sub_claim
+        pairs.append([target_text, c["sentence_text"]])
     scores = _score_pairs(pairs)
 
     scored: list[dict[str, Any]] = []
@@ -128,8 +137,14 @@ def _rerank_one_subclaim(item: tuple[str, list[dict[str, Any]]]) -> dict[str, An
     return {"sub_claim": sub_claim, "ranked_sentences": ranked}
 
 
-def rerank_by_subclaim(search_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped = _build_subclaim_candidates(search_results)
+def rerank_by_subclaim(
+    search_results: list[dict[str, Any]],
+    use_query_target: bool = False,
+) -> list[dict[str, Any]]:
+    grouped = _build_subclaim_candidates(
+        search_results=search_results,
+        use_query_target=use_query_target,
+    )
     if not grouped:
         return []
 

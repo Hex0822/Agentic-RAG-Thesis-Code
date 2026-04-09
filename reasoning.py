@@ -15,6 +15,7 @@ Your task is to analyze the current evidence and determine:
 1) What information has already been established.
 2) What key information is still missing.
 3) What search queries should be generated to retrieve the missing information.
+4) A final decision label for the claim status.
 
 The system performs iterative retrieval. Your output will guide the next search round.
 
@@ -75,6 +76,8 @@ Consistency Rules:
 - `search_needed = true` -> `missing_information` must contain at least 1 item.
 - If `search_needed = true`, each `missing_information` item must include at least 2 queries.
 - The `reasoning_note` must be consistent with `search_needed` and `missing_information`.
+- `label` must be one of: "Supported", "Refuted", "Not Enough Evidence".
+- If `search_needed = true`, then `label` must be "Not Enough Evidence".
 - In `reasoning_note`, explicitly explain whether you are stopping due to:
   - enough evidence, or
   - strong unsupported signal, or
@@ -117,6 +120,9 @@ class ReasoningOutput(BaseModel):
     missing_information: list[MissingInformationItem] = Field(
         default_factory=list,
         description="Missing information items with question, importance, and queries.",
+    )
+    label: Literal["Supported", "Refuted", "Not Enough Evidence"] = Field(
+        description="Final decision label for current reasoning status."
     )
     search_needed: bool = Field(
         description="Whether another retrieval round is needed."

@@ -152,6 +152,47 @@ HUMAN_PROMPT = """Relationship type: {relationship_type}
 Sub-claim: {sub_claim}
 """
 
+NESTED_VARIABLE_SYSTEM_PROMPT = """
+You are a query generator for resolving one variable in a fact-checking system.
+
+Your task is to generate search queries for ONE target variable only.
+
+Do not verify the claim.
+Do not decompose the problem.
+Do not introduce extra variables.
+Do not explain anything.
+
+Goal:
+Generate retrieval-friendly queries that help find the value of the target variable.
+
+Input:
+- variable_id
+- variable_description
+- query_hint (optional)
+- resolved_variables (optional)
+  (format per item: "variable_id: <id>, resolved_value: <value>")
+
+Rules:
+1. Focus only on the target variable.
+2. If resolved_variables are provided, use them directly in the queries.
+3. If query_hint is provided, use it as guidance for query style and target,
+   but do not just copy it mechanically.
+4. Generate:
+   - 1 factoid query
+   - 1 relation query
+   - optionally 1 direct statement query
+5. Keep queries short, precise, and non-redundant.
+6. Do not generate definitions, explanations, or background questions.
+
+{format_instructions}
+"""
+
+NESTED_VARIABLE_HUMAN_PROMPT = """variable_id: {variable_id}
+variable_description: {variable_description}
+query_hint: {query_hint}
+resolved_variables: {resolved_variables}
+"""
+
 CAUSAL_ORIGINAL_SYSTEM_PROMPT = (
     SYSTEM_PROMPT
     + """
@@ -242,6 +283,31 @@ class SearchPlannerOutput(BaseModel):
         )
 
 
+class NestedVariableQueryPlanItem(BaseModel):
+    type: Literal["factoid", "relation", "direct_statement"]
+    query: str = Field(min_length=1)
+
+
+class NestedVariableQueryOutput(BaseModel):
+    query_plan: list[NestedVariableQueryPlanItem] = Field(min_length=2, max_length=3)
+
+    def to_query_list(self) -> list[str]:
+        type_priority = {"factoid": 0, "relation": 1, "direct_statement": 2}
+        seen: set[str] = set()
+        ordered: list[tuple[int, str]] = []
+        for item in self.query_plan:
+            query = item.query.strip()
+            if not query:
+                continue
+            key = query.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append((type_priority.get(item.type, 99), query))
+        ordered.sort(key=lambda x: x[0])
+        return [q for _, q in ordered][:3]
+
+
 class SearchPlanner:
     def __init__(self, llm: BaseChatModel) -> None:
         self._parser = JsonOutputParser(pydantic_object=SearchPlannerOutput)
@@ -254,6 +320,12 @@ class SearchPlanner:
             [("system", CAUSAL_ORIGINAL_SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
         self._causal_original_chain = self._causal_original_prompt | llm | self._parser
+
+        self._nested_variable_parser = JsonOutputParser(pydantic_object=NestedVariableQueryOutput)
+        self._nested_variable_prompt = ChatPromptTemplate.from_messages(
+            [("system", NESTED_VARIABLE_SYSTEM_PROMPT), ("human", NESTED_VARIABLE_HUMAN_PROMPT)]
+        ).partial(format_instructions=self._nested_variable_parser.get_format_instructions())
+        self._nested_variable_chain = self._nested_variable_prompt | llm | self._nested_variable_parser
 
     def plan(self, relationship_type: str, sub_claim: str) -> SearchPlannerOutput:
         if not sub_claim.strip():
@@ -276,3 +348,29 @@ class SearchPlanner:
             }
         )
         return SearchPlannerOutput.model_validate(raw)
+
+    def plan_nested_variable(
+        self,
+        variable_id: str,
+        variable_description: str,
+        query_hint: str | None = None,
+        resolved_variables: list[str] | None = None,
+    ) -> NestedVariableQueryOutput:
+        vid = variable_id.strip()
+        vdesc = variable_description.strip()
+        if not vid:
+            raise ValueError("variable_id must not be empty.")
+        if not vdesc:
+            raise ValueError("variable_description must not be empty.")
+
+        resolved = resolved_variables if isinstance(resolved_variables, list) else []
+        clean_resolved = [str(v).strip() for v in resolved if str(v).strip()]
+        raw = self._nested_variable_chain.invoke(
+            {
+                "variable_id": vid,
+                "variable_description": vdesc,
+                "query_hint": (query_hint or "").strip(),
+                "resolved_variables": clean_resolved,
+            }
+        )
+        return NestedVariableQueryOutput.model_validate(raw)

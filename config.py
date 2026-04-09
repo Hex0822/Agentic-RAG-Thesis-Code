@@ -34,6 +34,7 @@ RERANKER_MAX_WORKERS: Final[int] = 4
 # Number of top evidence chunks to keep for each sub-claim when passing to the ccontext stage.
 CONTEXT_EVIDENCE_TOP_K: Final[int] = 5
 REASONING_MAX_ROUNDS: Final[int] = 3
+NESTED_MAX_UNKNOWN_RETRIES_PER_VARIABLE: Final[int] = 3
 
 
 def load_project_env() -> None:
@@ -85,6 +86,21 @@ def create_search_planner_llm() -> ChatOpenAI:
     return create_large_llm()
 
 
+def create_nested_planner_llm() -> ChatOpenAI:
+    # Fixed stage routing: nested planner uses the large model.
+    return create_large_llm()
+
+
 def create_reasoning_llm() -> ChatOpenAI:
     # Fixed stage routing: reasoning uses the large model.
+    return create_large_llm()
+
+
+def create_quick_reasoning_llm() -> ChatOpenAI:
+    # Fixed stage routing: quick reasoning uses the small model.
+    return create_small_llm()
+
+
+def create_nested_decision_llm() -> ChatOpenAI:
+    # Fixed stage routing: nested final decision uses the large model.
     return create_large_llm()
