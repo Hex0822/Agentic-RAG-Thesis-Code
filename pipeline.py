@@ -46,6 +46,23 @@ _PROGRESS_LOG_PATH: Path | None = None
 _PROGRESS_LOG_LOCK = Lock()
 
 
+def _normalize_tags(raw_tags: Any) -> list[str]:
+    if not isinstance(raw_tags, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_tags:
+        tag = str(item).strip()
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(tag)
+    return normalized
+
+
 class PipelineState(TypedDict, total=False):
     original_claim: str
     relationship_type: str
@@ -836,6 +853,7 @@ def run_pipeline(
     previous_context: dict[str, Any] | None = None,
     max_rounds: int = REASONING_MAX_ROUNDS,
     show_progress: bool = True,
+    invoke_config: dict[str, Any] | None = None,
 ) -> PipelineState:
     """Run the pipeline synchronously and return its final state."""
 
@@ -855,6 +873,7 @@ def run_pipeline(
     rounds_limit = max(1, int(max_rounds))
     current_context = previous_context if isinstance(previous_context, dict) else {}
     final_result: dict[str, Any] | None = None
+    base_invoke_config = dict(invoke_config) if isinstance(invoke_config, dict) else {}
 
     for round_idx in range(rounds_limit):
         _progress(show_progress, f"round {round_idx + 1}/{rounds_limit}: start")
@@ -863,7 +882,22 @@ def run_pipeline(
             input_state["context_management"] = current_context
         _progress_data(show_progress, f"round_{round_idx + 1}.invoke_input", input_state)
 
-        result = app.invoke(input_state)
+        round_invoke_config = dict(base_invoke_config)
+        base_run_name = str(base_invoke_config.get("run_name", "")).strip() or "fact_check_pipeline"
+        round_invoke_config["run_name"] = f"{base_run_name}.round_{round_idx + 1}"
+
+        round_tags = _normalize_tags(round_invoke_config.get("tags"))
+        round_tag = f"round:{round_idx + 1}"
+        if round_tag.lower() not in {t.lower() for t in round_tags}:
+            round_tags.append(round_tag)
+        round_invoke_config["tags"] = round_tags
+
+        metadata = round_invoke_config.get("metadata", {})
+        metadata_map = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata_map["round"] = round_idx + 1
+        round_invoke_config["metadata"] = metadata_map
+
+        result = app.invoke(input_state, config=round_invoke_config or None)
         if not isinstance(result, dict):
             raise TypeError("Pipeline returned non-dict result.")
         _progress_data(show_progress, f"round_{round_idx + 1}.invoke_output", result)

@@ -314,18 +314,24 @@ class SearchPlanner:
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = self._prompt | llm | self._parser
+        self._chain = (self._prompt | llm | self._parser).with_config(
+            {"run_name": "search_planner_chain", "tags": ["stage:search_planner"]}
+        )
 
         self._causal_original_prompt = ChatPromptTemplate.from_messages(
             [("system", CAUSAL_ORIGINAL_SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
-        self._causal_original_chain = self._causal_original_prompt | llm | self._parser
+        self._causal_original_chain = (self._causal_original_prompt | llm | self._parser).with_config(
+            {"run_name": "search_planner_causal_chain", "tags": ["stage:search_planner"]}
+        )
 
         self._nested_variable_parser = JsonOutputParser(pydantic_object=NestedVariableQueryOutput)
         self._nested_variable_prompt = ChatPromptTemplate.from_messages(
             [("system", NESTED_VARIABLE_SYSTEM_PROMPT), ("human", NESTED_VARIABLE_HUMAN_PROMPT)]
         ).partial(format_instructions=self._nested_variable_parser.get_format_instructions())
-        self._nested_variable_chain = self._nested_variable_prompt | llm | self._nested_variable_parser
+        self._nested_variable_chain = (
+            self._nested_variable_prompt | llm | self._nested_variable_parser
+        ).with_config({"run_name": "search_planner_nested_variable_chain", "tags": ["stage:search_planner"]})
 
     def plan(self, relationship_type: str, sub_claim: str) -> SearchPlannerOutput:
         if not sub_claim.strip():

@@ -7,6 +7,15 @@ from typing import Any
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+try:
+    from langsmith import traceable
+except Exception:
+    def traceable(*_args: Any, **_kwargs: Any):
+        def _decorator(func):
+            return func
+
+        return _decorator
+
 from config import RERANKER_BATCH_SIZE, RERANKER_MAX_WORKERS, RERANKER_MODEL_NAME
 
 _MODEL_LOCK = threading.Lock()
@@ -137,6 +146,7 @@ def _rerank_one_subclaim(item: tuple[str, list[dict[str, Any]]]) -> dict[str, An
     return {"sub_claim": sub_claim, "ranked_sentences": ranked}
 
 
+@traceable(name="rerank_by_subclaim", run_type="tool")
 def rerank_by_subclaim(
     search_results: list[dict[str, Any]],
     use_query_target: bool = False,

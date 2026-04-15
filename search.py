@@ -5,6 +5,15 @@ from typing import Any
 
 import requests
 
+try:
+    from langsmith import traceable
+except Exception:
+    def traceable(*_args: Any, **_kwargs: Any):
+        def _decorator(func):
+            return func
+
+        return _decorator
+
 from config import (
     QUERY_SEARCH_MAX_WORKERS,
     TAVILY_API_URL,
@@ -44,6 +53,7 @@ def _dedupe_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return deduped
 
 
+@traceable(name="tavily_search_query", run_type="tool")
 def _search_one_query(sub_claim: str, query: str) -> list[dict[str, str]]:
     payload = {
         "api_key": get_tavily_api_key(),
@@ -74,6 +84,7 @@ def _search_one_query(sub_claim: str, query: str) -> list[dict[str, str]]:
     return rows
 
 
+@traceable(name="search_subclaim_queries", run_type="tool")
 def search_subclaim_queries(sub_claim: str, queries: list[str]) -> list[dict[str, str]]:
     clean_queries = _dedupe_queries([q.strip() for q in queries if q and q.strip()])
     if not clean_queries:

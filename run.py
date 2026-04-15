@@ -3,7 +3,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import ensure_openai_env, ensure_tavily_env, load_project_env
+try:
+    from langsmith import traceable
+except Exception:
+    def traceable(*_args: Any, **_kwargs: Any):
+        def _decorator(func):
+            return func
+
+        return _decorator
+
+from config import (
+    build_langsmith_invoke_config,
+    ensure_langsmith_env,
+    ensure_openai_env,
+    ensure_tavily_env,
+    get_langsmith_project,
+    is_langsmith_tracing_enabled,
+    load_project_env,
+)
 from pipeline import run_pipeline, set_progress_log_path
 from result import save_final_result
 
@@ -12,6 +29,18 @@ INPUT_CLAIM = "McDonald\u2019s Azerbaijan's official account was promoting the m
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 RESULTS_TXT_PATH = Path(__file__).resolve().parent / "results.txt"
+
+
+@traceable(name="fact_check_session", run_type="chain")
+def _run_pipeline_traced(
+    claim: str,
+    invoke_config: dict[str, Any],
+) -> dict[str, Any]:
+    return run_pipeline(
+        claim,
+        show_progress=True,
+        invoke_config=invoke_config,
+    )
 
 
 def build_nested_context_timeline(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -88,6 +117,7 @@ def main() -> None:
     load_project_env()
     ensure_openai_env()
     ensure_tavily_env()
+    ensure_langsmith_env()
 
     claim = INPUT_CLAIM.strip()
     if not claim:
@@ -99,12 +129,18 @@ def main() -> None:
 
     _append_log_line(log_path, "===== RUN START =====")
     _append_log_line(log_path, f"claim: {claim}")
+    langsmith_enabled = is_langsmith_tracing_enabled()
+    invoke_config = build_langsmith_invoke_config(claim=claim, run_id=ts)
+    if langsmith_enabled:
+        _append_log_line(log_path, f"langsmith_tracing: enabled (project={get_langsmith_project()})")
+    else:
+        _append_log_line(log_path, "langsmith_tracing: disabled")
 
     set_progress_log_path(log_path)
     try:
-        result = run_pipeline(
-            claim,
-            show_progress=True,
+        result = _run_pipeline_traced(
+            claim=claim,
+            invoke_config=invoke_config,
         )
     finally:
         set_progress_log_path(None)

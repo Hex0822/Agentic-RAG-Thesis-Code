@@ -5,6 +5,9 @@ logs/
 model/
 .env
 .DS_Store
+
+results.txt
+
 *.pyc
 *.log
 *.ckpt
@@ -20,4 +23,5 @@ model/
 *.pb
 *.tflite
 *.ipynb
+*.txt
 design_doc.md

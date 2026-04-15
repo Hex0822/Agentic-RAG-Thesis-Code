@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Final
+from typing import Any, Final
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -53,6 +53,52 @@ def ensure_tavily_env() -> None:
     if not os.getenv("TAVILY_API_KEY"):
         print("ERROR: TAVILY_API_KEY not found.")
         sys.exit(1)
+
+
+def is_langsmith_tracing_enabled() -> bool:
+    load_project_env()
+    value = os.getenv("LANGSMITH_TRACING", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def ensure_langsmith_env() -> None:
+    load_project_env()
+    if not is_langsmith_tracing_enabled():
+        return
+
+    if not os.getenv("LANGSMITH_API_KEY", "").strip():
+        print("ERROR: LANGSMITH_TRACING is enabled but LANGSMITH_API_KEY not found.")
+        sys.exit(1)
+
+    # Keep project naming stable for easier filtering in LangSmith UI.
+    os.environ.setdefault("LANGSMITH_PROJECT", get_langsmith_project())
+
+
+def get_langsmith_project(default: str = "master-thesis-fact-checking") -> str:
+    load_project_env()
+    project = os.getenv("LANGSMITH_PROJECT", "").strip()
+    if project:
+        return project
+    return default
+
+
+def build_langsmith_invoke_config(claim: str, run_id: str) -> dict[str, Any]:
+    if not is_langsmith_tracing_enabled():
+        return {}
+
+    claim_preview = " ".join(claim.strip().split())
+    if len(claim_preview) > 120:
+        claim_preview = claim_preview[:117] + "..."
+
+    return {
+        "run_name": "fact_check_pipeline",
+        "tags": ["master-thesis", "fact-checking", f"local_run:{run_id}"],
+        "metadata": {
+            "claim_preview": claim_preview,
+            "claim_length": len(claim),
+            "local_run_id": run_id,
+        },
+    }
 
 
 def get_tavily_api_key() -> str:

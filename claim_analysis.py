@@ -96,11 +96,15 @@ class ClaimAnalyzer:
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = self._prompt | llm | self._parser
+        self._chain = (self._prompt | llm | self._parser).with_config(
+            {"run_name": "claim_analysis_chain", "tags": ["stage:claim_analysis"]}
+        )
         self._resolve_prompt = ChatPromptTemplate.from_messages(
             [("system", RESOLVE_SYSTEM_PROMPT), ("human", RESOLVE_HUMAN_PROMPT)]
         )
-        self._resolve_chain = self._resolve_prompt | llm | StrOutputParser()
+        self._resolve_chain = (self._resolve_prompt | llm | StrOutputParser()).with_config(
+            {"run_name": "claim_analysis_causal_normalize_chain", "tags": ["stage:claim_analysis"]}
+        )
 
     def _normalize_causal_original_claim(self, original_claim: str, sub_claims: list[str]) -> str:
         context = "\n".join(f"- {s}" for s in sub_claims if s and s.strip())

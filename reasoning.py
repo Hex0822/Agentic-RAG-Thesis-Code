@@ -139,7 +139,9 @@ class ReasoningEngine:
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
         ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = self._prompt | llm | self._parser
+        self._chain = (self._prompt | llm | self._parser).with_config(
+            {"run_name": "reasoning_chain", "tags": ["stage:reasoning"]}
+        )
 
     def reason(
         self,
