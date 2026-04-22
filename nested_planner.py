@@ -204,11 +204,11 @@ class NestedStep(BaseModel):
 
 class NestedPlannerOutput(BaseModel):
     relationship_type: Literal["NESTED"] = "NESTED"
-    nested_claim: str = Field(min_length=1)
-    nested_structure: str = Field(min_length=1)
-    planning_basis: str = Field(min_length=1)
-    steps: list[NestedStep] = Field(min_length=1)
-    execution_order: list[str] = Field(min_length=1)
+    nested_claim: str = Field(default="")
+    nested_structure: str = Field(default="")
+    planning_basis: str = Field(default="")
+    steps: list[NestedStep] = Field(default_factory=list)
+    execution_order: list[str] = Field(default_factory=list)
 
 
 class NestedPlannerEnvelope(BaseModel):

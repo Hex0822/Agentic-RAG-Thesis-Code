@@ -1,6 +1,8 @@
 """Pipeline with branch:
 - NESTED: claim_analysis -> nested_planner -> context_management -> search_planner -> search -> text_processing -> reranker -> context_management -> quick_reasoning -> nested_decision -> END
 - others: claim_analysis -> search_planner -> search -> text_processing -> reranker -> context_management -> reasoning
+
+If nested_planner returns empty steps, the pipeline falls back to ATOMIC path.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -175,6 +177,25 @@ def _nested_planner_node(planner: NestedPlanner, show_progress: bool = False):
         )
         steps = result.steps if isinstance(result.steps, list) else []
         _progress(show_progress, f"nested_planner result: steps={len(steps)}")
+
+        if not steps:
+            fallback_claim = str(sub_claims[0]).strip() if sub_claims else ""
+            if not fallback_claim:
+                fallback_claim = str(state.get("original_claim", "")).strip()
+
+            # Empty nested plan means no dependency chain is required.
+            output = {
+                "relationship_type": "ATOMIC",
+                "sub_claims": [fallback_claim] if fallback_claim else [],
+                "nested_plan": {},
+            }
+            _progress(
+                show_progress,
+                "nested_planner fallback: empty plan -> switch relationship_type to ATOMIC",
+            )
+            _progress_data(show_progress, "nested_planner.output", output)
+            return output
+
         output = {"nested_plan": result.model_dump()}
         _progress_data(show_progress, "nested_planner.output", output)
         return output
@@ -186,6 +207,13 @@ def _route_after_claim_analysis(state: PipelineState) -> str:
     relationship_type = _get_relationship_type(state)
     if relationship_type == "NESTED":
         return "nested_planner"
+    return "search_planner"
+
+
+def _route_after_nested_planner(state: PipelineState) -> str:
+    relationship_type = _get_relationship_type(state)
+    if relationship_type == "NESTED":
+        return "context_management"
     return "search_planner"
 
 
@@ -269,6 +297,47 @@ def _build_followup_search_plan_from_context(
     return followup_plan
 
 
+def _dedupe_queries(queries: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for query in queries:
+        q = str(query).strip()
+        if not q:
+            continue
+        key = q.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(q)
+    return deduped
+
+
+def _build_nested_recovery_queries(
+    variable_description: str,
+    unresolved_dependency_descriptions: list[str],
+    original_claim: str,
+) -> list[str]:
+    variable_desc = variable_description.strip()
+    unresolved = [str(item).strip() for item in unresolved_dependency_descriptions if str(item).strip()]
+    claim = original_claim.strip()
+    if not variable_desc:
+        return []
+
+    unresolved_text = " ".join(unresolved[:2]).strip()
+    candidates: list[str] = []
+    if unresolved_text:
+        candidates.extend(
+            [
+                f"{variable_desc} related to {unresolved_text}",
+                f"{unresolved_text} {variable_desc}",
+            ]
+        )
+    if claim:
+        candidates.append(f"{variable_desc} {claim}")
+    candidates.append(f"{variable_desc} fact check evidence")
+    return _dedupe_queries(candidates)[:3]
+
+
 def _search_planner_node(planner: SearchPlanner, show_progress: bool = False):
     def _node(state: PipelineState) -> dict[str, Any]:
         _progress(show_progress, "step: search_planner")
@@ -300,6 +369,15 @@ def _search_planner_node(planner: SearchPlanner, show_progress: bool = False):
             depends_on = current_var_data.get("depends_on", [])
             depends_on_list = depends_on if isinstance(depends_on, list) else []
             query_hint = str(current_var_data.get("query_hint", "")).strip()
+            recovery_mode = bool(current_var_data.get("recovery_mode", False))
+            unresolved_descriptions_raw = current_var_data.get(
+                "unresolved_dependency_descriptions", []
+            )
+            unresolved_dependency_descriptions = (
+                [str(item).strip() for item in unresolved_descriptions_raw if str(item).strip()]
+                if isinstance(unresolved_descriptions_raw, list)
+                else []
+            )
             resolved_value_map_raw = context_data.get("resolved_variable_values", {})
             resolved_value_map = (
                 {
@@ -321,9 +399,20 @@ def _search_planner_node(planner: SearchPlanner, show_progress: bool = False):
                 query_hint=query_hint,
                 resolved_variables=resolved_variables,
             )
+            planned_queries = result.to_query_list()
+            query_source = "nested_variable_query_generator"
+            if recovery_mode:
+                recovery_queries = _build_nested_recovery_queries(
+                    variable_description=variable_description,
+                    unresolved_dependency_descriptions=unresolved_dependency_descriptions,
+                    original_claim=str(state.get("original_claim", "")),
+                )
+                planned_queries = _dedupe_queries([*planned_queries, *recovery_queries])[:6]
+                query_source = "nested_variable_query_generator_with_recovery"
+
             _progress(
                 show_progress,
-                f"nested target variable: {variable_id} | hint: {query_hint}",
+                f"nested target variable: {variable_id} | hint: {query_hint} | recovery={recovery_mode}",
             )
 
             output = {
@@ -334,10 +423,12 @@ def _search_planner_node(planner: SearchPlanner, show_progress: bool = False):
                         "nested_variable_id": variable_id,
                         "nested_depends_on": depends_on_list,
                         "resolved_variables": resolved_variables,
+                        "recovery_mode": recovery_mode,
+                        "unresolved_dependency_descriptions": unresolved_dependency_descriptions,
                         "query_hint": query_hint,
                         "query_plan": [item.model_dump() for item in result.query_plan],
-                        "queries": result.to_query_list(),
-                        "query_source": "nested_variable_query_generator",
+                        "queries": planned_queries,
+                        "query_source": query_source,
                     }
                 ]
             }
@@ -811,7 +902,14 @@ def build_pipeline(
             "search_planner": "search_planner",
         },
     )
-    graph.add_edge("nested_planner", "context_management")
+    graph.add_conditional_edges(
+        "nested_planner",
+        _route_after_nested_planner,
+        {
+            "context_management": "context_management",
+            "search_planner": "search_planner",
+        },
+    )
     graph.add_edge("search_planner", "search")
     graph.add_edge("search", "text_processing")
     graph.add_edge("text_processing", "reranker")

@@ -250,6 +250,35 @@ def _all_nested_steps_resolved(
     return all(variable_id in resolved_values for variable_id in step_ids)
 
 
+def _infer_nested_blocked_reason(
+    nested_plan: dict[str, Any],
+    resolved_values: dict[str, str],
+    failed_variables: set[str],
+) -> str:
+    steps = nested_plan.get("steps", [])
+    if not isinstance(steps, list) or not steps:
+        return "no_nested_steps"
+
+    unresolved_step_ids: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        variable_id = str(step.get("variable_id", "")).strip()
+        if not variable_id:
+            continue
+        if variable_id in resolved_values:
+            continue
+        unresolved_step_ids.append(variable_id)
+
+    if not unresolved_step_ids:
+        return "all_steps_resolved"
+
+    if all(variable_id in failed_variables for variable_id in unresolved_step_ids):
+        return "unknown_retry_exceeded"
+
+    return "dependency_not_resolved"
+
+
 def _select_next_nested_variable(
     nested_plan: dict[str, Any],
     resolved_values: dict[str, str],
@@ -262,7 +291,16 @@ def _select_next_nested_variable(
         return {}
 
     failed = failed_variables if isinstance(failed_variables, set) else set()
+    step_descriptions: dict[str, str] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        sid = str(step.get("variable_id", "")).strip()
+        sdesc = str(step.get("description", "")).strip()
+        if sid and sdesc:
+            step_descriptions[sid] = sdesc
 
+    # Pass 1: strict dependency execution.
     for step in steps:
         if not isinstance(step, dict):
             continue
@@ -296,6 +334,55 @@ def _select_next_nested_variable(
             "depends_on": depends_on,
             "query_hint_template": query_hint_template,
             "query_hint": resolved_query_hint,
+            "recovery_mode": False,
+            "unresolved_depends_on": [],
+            "unresolved_dependency_descriptions": [],
+        }
+
+    # Pass 2: recovery execution. Allow downstream variable when unresolved dependencies
+    # are already marked as failed.
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        variable_id = str(step.get("variable_id", "")).strip()
+        description = str(step.get("description", "")).strip()
+        depends_on_raw = step.get("depends_on", [])
+        depends_on = (
+            [str(v).strip() for v in depends_on_raw if str(v).strip()]
+            if isinstance(depends_on_raw, list)
+            else []
+        )
+        query_hint_template = str(
+            step.get("query_hint_template", step.get("query_hint", ""))
+        ).strip()
+        resolved_query_hint = _render_query_with_resolved_values(
+            query_hint_template, resolved_values
+        )
+        unresolved_depends_on = [dep for dep in depends_on if dep not in resolved_values]
+
+        if not variable_id or not description:
+            continue
+        if variable_id in resolved_values:
+            continue
+        if variable_id in failed:
+            continue
+        if not unresolved_depends_on:
+            continue
+        if any(dep not in failed for dep in unresolved_depends_on):
+            continue
+
+        unresolved_dependency_descriptions = [
+            step_descriptions.get(dep, dep) for dep in unresolved_depends_on
+        ]
+        return {
+            "variable_id": variable_id,
+            "variable_description": description,
+            "depends_on": depends_on,
+            "query_hint_template": query_hint_template,
+            "query_hint": resolved_query_hint,
+            "recovery_mode": True,
+            "unresolved_depends_on": unresolved_depends_on,
+            "unresolved_dependency_descriptions": unresolved_dependency_descriptions,
         }
 
     return {}
@@ -345,6 +432,7 @@ def build_nested_context_management(
     resolved_pairs = [
         f"variable_id: {k}, resolved_value: {v}" for k, v in resolved_values.items()
     ]
+    blocked_reason = ""
 
     plan_data = search_plan if isinstance(search_plan, list) else []
     result_data = search_results if isinstance(search_results, list) else []
@@ -352,6 +440,7 @@ def build_nested_context_management(
     retrieval_phase = bool(plan_data or result_data or rerank_data)
     current_round_index = len(previous_rounds) + 1
     if retrieval_phase:
+        recovery_mode = bool(current_nested_variable.get("recovery_mode", False))
         subclaim_contexts = _build_subclaim_contexts_from_retrieval(
             search_plan=plan_data,
             search_results=result_data,
@@ -359,13 +448,14 @@ def build_nested_context_management(
         )
         current_round = {
             "round": current_round_index,
-            "mode": "NESTED_RETRIEVAL",
+            "mode": "NESTED_RECOVERY_RETRIEVAL" if recovery_mode else "NESTED_RETRIEVAL",
             "nested_plan": nested_plan_data,
             "current_nested_variable": current_nested_variable,
             "resolved_variable_values": resolved_values,
             "resolved_nested_variables": resolved_pairs,
             "nested_attempt_counts": nested_attempt_counts,
             "failed_nested_variables": sorted(failed_nested_variables),
+            "blocked_reason": "",
             "search_plan": plan_data,
             "search_results": result_data,
             "rerank_results": rerank_data,
@@ -373,9 +463,9 @@ def build_nested_context_management(
             "llm_feedback": [],
             "reasoning_output": {},
             "nested_decision_output": {},
-            "next_action": "NESTED_SEARCH_DONE",
+            "next_action": "NESTED_RECOVERY_SEARCH_DONE" if recovery_mode else "NESTED_SEARCH_DONE",
         }
-        overall_next_action = "NESTED_SEARCH_DONE"
+        overall_next_action = "NESTED_RECOVERY_SEARCH_DONE" if recovery_mode else "NESTED_SEARCH_DONE"
         reasoning_ready = True
     else:
         if all_steps_resolved:
@@ -383,13 +473,22 @@ def build_nested_context_management(
             overall_next_action = "NESTED_COMPLETE"
             reasoning_ready = True
         elif current_nested_variable:
-            next_action = "READY_FOR_NESTED_SEARCH"
-            overall_next_action = "READY_FOR_NESTED_SEARCH"
+            if bool(current_nested_variable.get("recovery_mode", False)):
+                next_action = "READY_FOR_NESTED_RECOVERY_SEARCH"
+                overall_next_action = "READY_FOR_NESTED_RECOVERY_SEARCH"
+            else:
+                next_action = "READY_FOR_NESTED_SEARCH"
+                overall_next_action = "READY_FOR_NESTED_SEARCH"
             reasoning_ready = False
         else:
             next_action = "NESTED_BLOCKED"
             overall_next_action = "NESTED_BLOCKED"
             reasoning_ready = True
+            blocked_reason = _infer_nested_blocked_reason(
+                nested_plan_data,
+                resolved_values,
+                failed_nested_variables,
+            )
 
         current_round = {
             "round": current_round_index,
@@ -400,6 +499,7 @@ def build_nested_context_management(
             "resolved_nested_variables": resolved_pairs,
             "nested_attempt_counts": nested_attempt_counts,
             "failed_nested_variables": sorted(failed_nested_variables),
+            "blocked_reason": blocked_reason,
             "search_plan": [],
             "search_results": [],
             "rerank_results": [],
@@ -423,6 +523,7 @@ def build_nested_context_management(
         "resolved_nested_variables": resolved_pairs,
         "nested_attempt_counts": nested_attempt_counts,
         "failed_nested_variables": sorted(failed_nested_variables),
+        "blocked_reason": blocked_reason,
     }
 
 
@@ -508,16 +609,25 @@ def apply_quick_reasoning_feedback(
         failed_variables=failed_nested_variables,
     )
     all_steps_resolved = _all_nested_steps_resolved(nested_plan, resolved_values)
+    blocked_reason = ""
 
     if all_steps_resolved:
         next_action = "NESTED_COMPLETE"
         reasoning_ready = True
     elif next_variable:
-        next_action = "READY_FOR_NESTED_SEARCH"
+        if bool(next_variable.get("recovery_mode", False)):
+            next_action = "READY_FOR_NESTED_RECOVERY_SEARCH"
+        else:
+            next_action = "READY_FOR_NESTED_SEARCH"
         reasoning_ready = False
     else:
         next_action = "NESTED_BLOCKED"
         reasoning_ready = True
+        blocked_reason = _infer_nested_blocked_reason(
+            nested_plan,
+            resolved_values,
+            failed_nested_variables,
+        )
 
     latest_round["next_action"] = next_action
     latest_round["resolved_variable_update"] = (
@@ -525,6 +635,7 @@ def apply_quick_reasoning_feedback(
     )
     latest_round["nested_attempt_counts"] = attempt_counts
     latest_round["failed_nested_variables"] = sorted(failed_nested_variables)
+    latest_round["blocked_reason"] = blocked_reason
 
     updated["rounds"] = rounds
     updated["latest_round"] = len(rounds)
@@ -539,6 +650,7 @@ def apply_quick_reasoning_feedback(
     updated["nested_attempt_counts"] = attempt_counts
     updated["failed_nested_variables"] = sorted(failed_nested_variables)
     updated["quick_reasoning_output"] = quick_reasoning_output
+    updated["blocked_reason"] = blocked_reason
     return updated
 
 

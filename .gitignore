@@ -3,6 +3,7 @@ output_minilm_best/
 __pycache__/
 logs/
 model/
+dataset/
 .env
 .DS_Store
 

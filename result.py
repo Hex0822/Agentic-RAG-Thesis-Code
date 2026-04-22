@@ -6,6 +6,7 @@ FINAL_RESULT: dict[str, str] = {
     "claim": "",
     "label": "",
 }
+_DEFAULT_LABEL = "Not Enough Evidence"
 
 
 def _extract_final_label(pipeline_result: dict[str, Any]) -> str:
@@ -27,6 +28,9 @@ def _extract_final_label(pipeline_result: dict[str, Any]) -> str:
                 label = str(reasoning.get("label", "")).strip()
                 if label:
                     return label
+        action = str(context.get("overall_next_action", "")).strip().upper()
+        if action == "NESTED_BLOCKED":
+            return _DEFAULT_LABEL
 
     nested_decision_output = pipeline_result.get("nested_decision_output", {})
     if isinstance(nested_decision_output, dict):
@@ -36,8 +40,10 @@ def _extract_final_label(pipeline_result: dict[str, Any]) -> str:
 
     reasoning_output = pipeline_result.get("reasoning_output", {})
     if isinstance(reasoning_output, dict):
-        return str(reasoning_output.get("label", "")).strip()
-    return ""
+        label = str(reasoning_output.get("label", "")).strip()
+        if label:
+            return label
+    return _DEFAULT_LABEL
 
 
 def save_final_result(claim: str, pipeline_result: dict[str, Any]) -> dict[str, str]:
