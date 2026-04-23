@@ -4,7 +4,6 @@ import json
 from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -86,8 +85,6 @@ Consistency Rules:
 
 Rules:
 - Base your judgment only on provided evidence chunks and previous round context.
-
-{format_instructions}
 """
 
 HUMAN_PROMPT = """Original claim:
@@ -135,11 +132,14 @@ class ReasoningOutput(BaseModel):
 
 class ReasoningEngine:
     def __init__(self, llm: BaseChatModel) -> None:
-        self._parser = JsonOutputParser(pydantic_object=ReasoningOutput)
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
-        ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = (self._prompt | llm | self._parser).with_config(
+        )
+        structured_llm = llm.with_structured_output(
+            ReasoningOutput,
+            method="json_schema",
+        )
+        self._chain = (self._prompt | structured_llm).with_config(
             {"run_name": "reasoning_chain", "tags": ["stage:reasoning"]}
         )
 

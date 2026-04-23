@@ -3,7 +3,6 @@
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -180,8 +179,6 @@ Output requirements:
 - depends_on valid
 - steps must be executable
 - DO NOT include unnecessary variables
-
-{format_instructions}
 """
 
 HUMAN_PROMPT = """relationship_type: {relationship_type}
@@ -217,11 +214,14 @@ class NestedPlannerEnvelope(BaseModel):
 
 class NestedPlanner:
     def __init__(self, llm: BaseChatModel) -> None:
-        self._parser = JsonOutputParser(pydantic_object=NestedPlannerEnvelope)
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
-        ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = (self._prompt | llm | self._parser).with_config(
+        )
+        structured_llm = llm.with_structured_output(
+            NestedPlannerEnvelope,
+            method="json_schema",
+        )
+        self._chain = (self._prompt | structured_llm).with_config(
             {"run_name": "nested_planner_chain", "tags": ["stage:nested_planner"]}
         )
 

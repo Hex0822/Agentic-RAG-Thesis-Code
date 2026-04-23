@@ -723,7 +723,7 @@ def _quick_reasoning_node(quick_reasoner: QuickReasoningEngine, show_progress: b
         variable_id = str(current_var_data.get("variable_id", "")).strip()
         variable_description = str(current_var_data.get("variable_description", "")).strip()
         if not variable_id or not variable_description:
-            quick_output = {"biref explain": "No variable information was provided.", "variable": "UNKNOWN"}
+            quick_output = {"brief_explain": "No variable information was provided.", "variable": "UNKNOWN"}
             updated_context = apply_quick_reasoning_feedback(context_data, quick_output)
             _progress(show_progress, "quick_reasoning result: UNKNOWN (missing variable input)")
             output = {

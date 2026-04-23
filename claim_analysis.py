@@ -3,7 +3,7 @@
 from typing import Any, Literal, TypedDict
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -46,7 +46,6 @@ Output: {{"relationship_type": "CAUSAL", "sub_claims": ["A happened in 2020.", "
 
 Input: "Elon Musk founded SpaceX in 2002 and later acquired Twitter."
 Output: {{"relationship_type": "ATOMIC", "sub_claims": ["Elon Musk founded SpaceX in 2002.", "Elon Musk acquired Twitter."], "classification_basis": "Parallel independent facts joined by 'and' indicate an atomic split."}}
-{format_instructions}
 """
 
 HUMAN_PROMPT = """Original claim:
@@ -92,11 +91,14 @@ class ClaimAnalyzer:
     """LangChain wrapper that classifies claim relationship and emits sub-claims."""
 
     def __init__(self, llm: BaseChatModel) -> None:
-        self._parser = JsonOutputParser(pydantic_object=ClaimAnalysisOutput)
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
-        ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = (self._prompt | llm | self._parser).with_config(
+        )
+        structured_llm = llm.with_structured_output(
+            ClaimAnalysisOutput,
+            method="json_schema",
+        )
+        self._chain = (self._prompt | structured_llm).with_config(
             {"run_name": "claim_analysis_chain", "tags": ["stage:claim_analysis"]}
         )
         self._resolve_prompt = ChatPromptTemplate.from_messages(

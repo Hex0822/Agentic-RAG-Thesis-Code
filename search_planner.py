@@ -14,7 +14,6 @@
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -144,8 +143,6 @@ Output format:
     }}
   ]
 }}
-
-{format_instructions}
 """
 
 HUMAN_PROMPT = """Relationship type: {relationship_type}
@@ -183,8 +180,6 @@ Rules:
    - optionally 1 direct statement query
 5. Keep queries short, precise, and non-redundant.
 6. Do not generate definitions, explanations, or background questions.
-
-{format_instructions}
 """
 
 NESTED_VARIABLE_HUMAN_PROMPT = """variable_id: {variable_id}
@@ -310,27 +305,35 @@ class NestedVariableQueryOutput(BaseModel):
 
 class SearchPlanner:
     def __init__(self, llm: BaseChatModel) -> None:
-        self._parser = JsonOutputParser(pydantic_object=SearchPlannerOutput)
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
-        ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = (self._prompt | llm | self._parser).with_config(
+        )
+        structured_planner_llm = llm.with_structured_output(
+            SearchPlannerOutput,
+            method="json_schema",
+        )
+        self._chain = (self._prompt | structured_planner_llm).with_config(
             {"run_name": "search_planner_chain", "tags": ["stage:search_planner"]}
         )
 
         self._causal_original_prompt = ChatPromptTemplate.from_messages(
             [("system", CAUSAL_ORIGINAL_SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
-        ).partial(format_instructions=self._parser.get_format_instructions())
-        self._causal_original_chain = (self._causal_original_prompt | llm | self._parser).with_config(
+        )
+        self._causal_original_chain = (
+            self._causal_original_prompt | structured_planner_llm
+        ).with_config(
             {"run_name": "search_planner_causal_chain", "tags": ["stage:search_planner"]}
         )
 
-        self._nested_variable_parser = JsonOutputParser(pydantic_object=NestedVariableQueryOutput)
         self._nested_variable_prompt = ChatPromptTemplate.from_messages(
             [("system", NESTED_VARIABLE_SYSTEM_PROMPT), ("human", NESTED_VARIABLE_HUMAN_PROMPT)]
-        ).partial(format_instructions=self._nested_variable_parser.get_format_instructions())
+        )
+        structured_nested_variable_llm = llm.with_structured_output(
+            NestedVariableQueryOutput,
+            method="json_schema",
+        )
         self._nested_variable_chain = (
-            self._nested_variable_prompt | llm | self._nested_variable_parser
+            self._nested_variable_prompt | structured_nested_variable_llm
         ).with_config({"run_name": "search_planner_nested_variable_chain", "tags": ["stage:search_planner"]})
 
     def plan(self, relationship_type: str, sub_claim: str) -> SearchPlannerOutput:

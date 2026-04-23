@@ -4,7 +4,6 @@ import json
 from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -26,8 +25,6 @@ Rules:
 3) If resolved variables clearly contradict the claim -> Refuted.
 4) If key variable values are missing/unknown/ambiguous -> Not Enough Evidence.
 5) Keep the explanation concise (1-2 short sentences).
-
-{format_instructions}
 """
 
 HUMAN_PROMPT = """original_claim: {original_claim}
@@ -50,11 +47,14 @@ class NestedDecisionOutput(BaseModel):
 
 class NestedDecisionEngine:
     def __init__(self, llm: BaseChatModel) -> None:
-        self._parser = JsonOutputParser(pydantic_object=NestedDecisionOutput)
         self._prompt = ChatPromptTemplate.from_messages(
             [("system", SYSTEM_PROMPT), ("human", HUMAN_PROMPT)]
-        ).partial(format_instructions=self._parser.get_format_instructions())
-        self._chain = (self._prompt | llm | self._parser).with_config(
+        )
+        structured_llm = llm.with_structured_output(
+            NestedDecisionOutput,
+            method="json_schema",
+        )
+        self._chain = (self._prompt | structured_llm).with_config(
             {"run_name": "nested_decision_chain", "tags": ["stage:nested_decision"]}
         )
 
