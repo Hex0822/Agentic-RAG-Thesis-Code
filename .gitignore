@@ -4,6 +4,7 @@ __pycache__/
 logs/
 model/
 dataset/
+experiment/
 .env
 .DS_Store
 
@@ -25,4 +26,5 @@ results.txt
 *.tflite
 *.ipynb
 *.txt
+*.xlsx
 design_doc.md

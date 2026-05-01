@@ -23,7 +23,10 @@ Each evidence group contains:
 - the query used to retrieve it
 - top-k evidence chunks (title + snippet)
 
-Reasoning Instructions:
+Rules:
+- Base your judgment only on provided evidence chunks and previous round context.
+
+Reasoning Workflow:
 1. Carefully read the original claim.
 2. Review previous rounds' known_information and missing_information (if available) to understand the current reasoning state.
 3. Compare previous rounds' missing_information with current-round evidence:
@@ -38,13 +41,45 @@ Reasoning Instructions:
 7. If the current evidence is already sufficient to logically determine the claim (supported or refuted), mark that no further search is needed.
 8. Otherwise, generate targeted search queries to retrieve evidence for the missing information.
 
-Search Value Assessment:
+Decision and Search Value Assessment:
 - Explicitly assess whether another retrieval round is likely to add meaningful new evidence.
 - Do NOT continue searching just to consume max rounds.
-- If high-quality queries have been tried across multiple rounds and still no direct support appears, treat this as a strong unsupported signal.
-- If retrieved evidence repeatedly corrects or conflicts with the claim wording/value, treat this as a claim-correction signal rather than an endless-search signal.
-- If missing questions do not converge (repeatedly asking almost the same unknown), stop looping and summarize what can already be concluded.
 - If retrieval strategy still appears weak (poor query wording, weak source scope, low coverage), you may request another round with improved targeted queries.
+- If missing questions do not converge (repeatedly asking almost the same unknown), stop looping and summarize what can already be concluded.
+
+Unsupported and Refuted Signals:
+- If high-quality queries have been tried across multiple rounds and still no direct support appears, treat this as a strong unsupported signal.
+- However, absence of support alone usually leads to Not Enough Evidence, not Refuted.
+- You may treat repeated absence of support as evidence toward Refuted only when the claim describes a high-salience, externally observable event that would normally leave reliable records if true, such as mass deaths, official actions, court rulings, public statements, major policy changes, or widely reported incidents.
+- For low-salience, private, vague, or hard-to-observe claims, absence of support should remain Not Enough Evidence unless explicit contradictory evidence, official denial, or direct fact-check correction is available.
+- A claim-correction signal supports Refuted only if the correction changes the core truth of the claim.
+- Minor rounding differences, approximate wording, paraphrases, rhetorical degree modifiers, or non-central details should not by themselves trigger Refuted.
+- Before labeling Refuted, ask whether the correction materially changes the claim's main public meaning.
+
+Numeric Matching Rules:
+- Public claims often use rounded or approximate numbers.
+- Do not refute a claim solely because of small rounding differences.
+- Treat values as compatible when the difference is small and does not change the main conclusion.
+- For approximate public-statements, differences under about 5-10% are usually not decisive.
+- But if the number is central and the difference is large enough to change the comparison or meaning, treat it as a serious mismatch.
+- Always normalize units, scale, currency, and time period before judging numeric conflict.
+
+Semantic Equivalence Rules:
+- Evidence does not need to use the same wording as the claim.
+- If official or reliable evidence supports the practical meaning, direct implication, or natural paraphrase of the claim, treat it as support.
+- Do not downgrade to Not Enough Evidence solely because the evidence is more specific than the claim or uses a different level of abstraction.
+- For purpose, objective, or reason-for-launch claims, evidence may support the claim by describing concrete goals, services, mechanisms, or intended outcomes that directly serve the broader stated purpose.
+- A broad purpose claim can be Supported when reliable evidence establishes a more specific objective that naturally entails that purpose.
+- Do not require the exact phrase “was launched to...” or identical purpose wording when the evidence clearly describes what the program, policy, or action was designed to achieve.
+- Do not treat paraphrase differences, rhetorical wording, or ordinary-language summaries as contradictions.
+- Be careful with idiomatic or rhetorical expressions; interpret them in ordinary context unless the claim clearly requires a legal, technical, or statistical meaning.
+- Only treat wording differences as important if they change the core meaning, scope, causal relation, population, time period, or measurable outcome of the claim.
+
+Examples:
+- Evidence that a job-training program provides vocational courses and employment placement can support a claim that it was launched to improve employability.
+- Evidence that a vaccination campaign provides free vaccines to children can support a claim that it was launched to protect children’s health.
+- Evidence that a road-safety policy reduces speed limits and improves pedestrian crossings can support a claim that it was introduced to make roads safer.
+- Evidence that a scholarship scheme funds tuition for low-income students can support a claim that it was created to expand access to education.
 
 Query Generation Rules:
 - Generate queries only for information that is still missing.
@@ -63,14 +98,14 @@ Query Generation Rules:
 - Prefer queries likely to match web page titles, knowledge pages, factual sentences, or snippets.
 - If multiple missing items exist, prioritize critical items and keep total queries across all items <= 6.
 
-Missing Information Format (for reranker target):
+Missing Information Format:
 - Each missing item must include `question` as a short, neutral factual question.
 - `question` should be directly comparable to evidence sentences for reranking.
 - Keep `question` concise (preferably 6-18 words), specific, and variable-focused.
 - Avoid vague prefixes such as "Can you", "Please explain", or "How to".
 - Keep one missing variable per `question`.
 
-Consistency Rules:
+Output Consistency Rules:
 - `search_needed = false` -> `missing_information` must be an empty list `[]`.
 - `search_needed = true` -> `missing_information` must contain at least 1 item.
 - If `search_needed = true`, each `missing_information` item must include at least 2 queries.
@@ -82,9 +117,6 @@ Consistency Rules:
   - strong unsupported signal, or
   - claim-correction signal, or
   - non-convergent missing information.
-
-Rules:
-- Base your judgment only on provided evidence chunks and previous round context.
 """
 
 HUMAN_PROMPT = """Original claim:
