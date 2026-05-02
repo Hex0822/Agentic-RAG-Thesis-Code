@@ -7,7 +7,6 @@ dataset/
 experiment/
 .env
 .DS_Store
-
 results.txt
 
 *.pyc
@@ -27,4 +26,6 @@ results.txt
 *.ipynb
 *.txt
 *.xlsx
+*.jsonl
+*.json
 design_doc.md

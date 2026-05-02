@@ -1,8 +1,9 @@
-"""Pipeline with branch:
-- NESTED: claim_analysis -> nested_planner -> context_management -> search_planner -> search -> text_processing -> reranker -> context_management -> quick_reasoning -> nested_decision -> END
-- others: claim_analysis -> search_planner -> search -> text_processing -> reranker -> context_management -> reasoning
+"""Pipeline for the claim-analysis ablation.
 
-If nested_planner returns empty steps, the pipeline falls back to ATOMIC path.
+The original claim is passed directly to the query planner as a single ATOMIC
+sub-claim, then the existing atomic route is used:
+claim_analysis_ablation -> search_planner -> search -> text_processing ->
+reranker -> context_management -> reasoning.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -15,16 +16,11 @@ from typing import Any, TypedDict, cast
 from langchain_core.language_models import BaseChatModel
 from langgraph.graph import END, StateGraph
 
-from claim_analysis import ClaimAnalyzer
 from config import (
     REASONING_MAX_ROUNDS,
     SUBCLAIM_SEARCH_MAX_WORKERS,
-    create_nested_decision_llm,
-    create_nested_planner_llm,
-    create_quick_reasoning_llm,
     create_reasoning_llm,
     create_search_planner_llm,
-    create_small_llm,
 )
 from context_management import (
     apply_nested_decision_feedback,
@@ -42,7 +38,10 @@ from search import search_subclaim_queries
 from search_planner import SearchPlanner
 from text_processing import process_search_results
 
-CLAIM_ANALYSIS_MODULE = "claim_analysis"
+CLAIM_ANALYSIS_ABLATION_BASIS = (
+    "Claim analysis ablation: the original claim is passed directly to the "
+    "query planner as one ATOMIC sub-claim."
+)
 _SUPPORTED_RELATIONSHIP_TYPES = {"NESTED", "ATOMIC", "CAUSAL"}
 _PROGRESS_LOG_PATH: Path | None = None
 _PROGRESS_LOG_LOCK = Lock()
@@ -126,23 +125,22 @@ def _get_relationship_type(state: PipelineState) -> str:
     return relationship_type
 
 
-def _claim_analysis_node(analyzer: ClaimAnalyzer, show_progress: bool = False):
+def _claim_analysis_node(show_progress: bool = False):
     def _node(state: PipelineState) -> dict[str, Any]:
-        _progress(show_progress, "step: claim_analysis")
+        _progress(show_progress, "step: claim_analysis_ablation")
         claim = state.get("original_claim", "").strip()
         _progress_data(show_progress, "claim_analysis.input", {"original_claim": claim})
         if not claim:
             raise ValueError("Pipeline input requires a non-empty 'original_claim'.")
 
-        result = analyzer.analyze(claim)
         _progress(
             show_progress,
-            f"claim_analysis result: relationship_type={result.relationship_type}, sub_claims={len(result.sub_claims)}",
+            "claim_analysis ablated: relationship_type=ATOMIC, sub_claims=1",
         )
         output = {
-            "relationship_type": result.relationship_type,
-            "sub_claims": result.sub_claims,
-            "classification_basis": result.classification_basis,
+            "relationship_type": "ATOMIC",
+            "sub_claims": [claim],
+            "classification_basis": CLAIM_ANALYSIS_ABLATION_BASIS,
         }
         _progress_data(show_progress, "claim_analysis.output", output)
         return output
@@ -866,76 +864,38 @@ def build_pipeline(
     quick_reasoning_llm: BaseChatModel | None = None,
     show_progress: bool = False,
 ):
-    """Build pipeline with NESTED context-management early-stop branch."""
+    """Build the ablated pipeline using only the existing ATOMIC route."""
 
-    analysis_llm = claim_analysis_llm or create_small_llm()
-    nested_llm = nested_planner_llm or create_nested_planner_llm()
-    nested_decision_model = nested_decision_llm or create_nested_decision_llm()
+    # Kept for API compatibility; these stages are intentionally bypassed.
+    _ = (
+        claim_analysis_llm,
+        nested_planner_llm,
+        nested_decision_llm,
+        quick_reasoning_llm,
+    )
+
     planner_llm = search_planner_llm or create_search_planner_llm()
     reasoner_llm = reasoning_llm or create_reasoning_llm()
-    quick_llm = quick_reasoning_llm or create_quick_reasoning_llm()
 
-    analyzer = ClaimAnalyzer(analysis_llm)
-    nested_planner = NestedPlanner(nested_llm)
     planner = SearchPlanner(planner_llm)
     reasoner = ReasoningEngine(reasoner_llm)
-    quick_reasoner = QuickReasoningEngine(quick_llm)
-    nested_decider = NestedDecisionEngine(nested_decision_model)
     graph = StateGraph(PipelineState)
 
-    graph.add_node("claim_analysis", _claim_analysis_node(analyzer, show_progress=show_progress))
-    graph.add_node("nested_planner", _nested_planner_node(nested_planner, show_progress=show_progress))
+    graph.add_node("claim_analysis", _claim_analysis_node(show_progress=show_progress))
     graph.add_node("search_planner", _search_planner_node(planner, show_progress=show_progress))
     graph.add_node("search", _search_node(show_progress=show_progress))
     graph.add_node("text_processing", _text_processing_node(show_progress=show_progress))
     graph.add_node("reranker", _reranker_node(show_progress=show_progress))
     graph.add_node("context_management", _context_management_node(show_progress=show_progress))
     graph.add_node("reasoning", _reasoning_node(reasoner, show_progress=show_progress))
-    graph.add_node("quick_reasoning", _quick_reasoning_node(quick_reasoner, show_progress=show_progress))
-    graph.add_node("nested_decision", _nested_decision_node(nested_decider, show_progress=show_progress))
     graph.set_entry_point("claim_analysis")
-    graph.add_conditional_edges(
-        "claim_analysis",
-        _route_after_claim_analysis,
-        {
-            "nested_planner": "nested_planner",
-            "search_planner": "search_planner",
-        },
-    )
-    graph.add_conditional_edges(
-        "nested_planner",
-        _route_after_nested_planner,
-        {
-            "context_management": "context_management",
-            "search_planner": "search_planner",
-        },
-    )
+    graph.add_edge("claim_analysis", "search_planner")
     graph.add_edge("search_planner", "search")
     graph.add_edge("search", "text_processing")
     graph.add_edge("text_processing", "reranker")
     graph.add_edge("reranker", "context_management")
-    graph.add_conditional_edges(
-        "context_management",
-        _route_after_context_management,
-        {
-            "search_planner": "search_planner",
-            "reasoning": "reasoning",
-            "quick_reasoning": "quick_reasoning",
-            "nested_decision": "nested_decision",
-            "end": END,
-        },
-    )
+    graph.add_edge("context_management", "reasoning")
     graph.add_edge("reasoning", END)
-    graph.add_edge("nested_decision", END)
-    graph.add_conditional_edges(
-        "quick_reasoning",
-        _route_after_quick_reasoning,
-        {
-            "search_planner": "search_planner",
-            "nested_decision": "nested_decision",
-            "end": END,
-        },
-    )
 
     return graph.compile()
 
